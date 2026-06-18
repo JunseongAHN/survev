@@ -11,6 +11,7 @@
     "dev:game": "cd server && pnpm dev:game",
     "dev:client": "cd client && pnpm dev",
     "build": "cd server && pnpm build && cd ../client && pnpm build",
+    "cpc:duo2v2:snapshot": "tsx server/src/cpc_dev/writeDuo2v2Snapshot.ts",
     "stressTest": "cd server && pnpm stressTest",
     "lint": "oxlint --fix; dprint fmt",
     "lint:ci": "oxlint; dprint check"
