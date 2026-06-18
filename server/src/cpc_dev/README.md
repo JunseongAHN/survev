@@ -13,6 +13,23 @@ cd tests
 pnpm test src/cpc_dev/duo2v2Scenario.test.ts
 ```
 
+Generate a browser-inspectable snapshot without starting any server:
+
+```sh
+pnpm cpc:duo2v2:snapshot
+```
+
+This writes:
+
+- `.tmp/cpc_dev/duo2v2Snapshot.json`
+- `.tmp/cpc_dev/duo2v2Snapshot.html`
+
+Open the HTML file directly in a browser to see scenario status, agent positions, HP, teams, and the raw snapshot JSON. Optional flags are supported:
+
+```sh
+pnpm cpc:duo2v2:snapshot -- --steps=10 --seed=cpc-duo2v2-seed-0 --mapSize=128
+```
+
 To inspect a snapshot from code, call `runDuo2v2SnapshotScenario()` and either use the returned `snapshot` object directly or pass it to `snapshotToJson()` / `dumpSnapshot()`. Tests do not write debug artifacts automatically.
 
 Intentional limitations:
