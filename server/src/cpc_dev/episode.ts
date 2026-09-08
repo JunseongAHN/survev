@@ -1,3 +1,4 @@
+import { GameConfig } from "../../../shared/gameConfig.ts";
 import { Config } from "../config.ts";
 import type { Player } from "../game/objects/player.ts";
 import { applyCpcAction, type CpcAction } from "./applyCpcAction.ts";
@@ -16,6 +17,8 @@ export interface EpisodeOptions {
     /** agent ids driven through step(); the rest use the scripted policy */
     controlled?: string[];
     scripted?: ScriptedPolicyName;
+    /** "armed" starts everyone with a loaded ak47 and reserve ammo (curriculum helper); default "fists" */
+    loadout?: "fists" | "armed";
 }
 
 export interface BridgeEvent {
@@ -111,6 +114,7 @@ export class CpcEpisode {
             timeLimit: options.timeLimit ?? 60,
             controlled: options.controlled ?? ["team-a-0", "team-a-1"],
             scripted: options.scripted ?? "chaser",
+            loadout: options.loadout ?? "fists",
         };
     }
 
@@ -145,6 +149,13 @@ export class CpcEpisode {
         this.eventCursor = 0;
         this.done = false;
         this.info = { alive_teams: this.aliveTeams(), winner_team: null, reason: null, metrics: null };
+        if (this.options.loadout === "armed") {
+            for (const player of this.players) {
+                player.weaponManager.setWeapon(GameConfig.WeaponSlot.Primary, "ak47", 30);
+                player.weaponManager.setCurWeapIndex(GameConfig.WeaponSlot.Primary);
+                player.invManager.set("762mm", 90);
+            }
+        }
         this.taps = attachEventTaps(this.players, () => this.t);
         game.netSync();
         return this.message([]);

@@ -100,6 +100,17 @@ test("observations equal the client-visible object set after every step (M5)", (
     episode.close();
 });
 
+test("the armed loadout starts everyone with a loaded ak47", () => {
+    const episode = new CpcEpisode({ seed: "cpc-episode-test", scripted: "idle", controlled: [], loadout: "armed" });
+    const msg = episode.reset();
+    for (const id of agentIds) {
+        expect(msg.obs[id].self.weapon).toBe("ak47");
+        expect(msg.obs[id].self.clip).toBe(30);
+        expect(msg.obs[id].self.reserve).toBe(90);
+    }
+    episode.close();
+});
+
 test("controlled actions are held between steps and released by {}", () => {
     const episode = new CpcEpisode({ seed: "cpc-episode-test", scripted: "idle", controlled: ["team-a-0"] });
     const start = episode.reset().obs["team-a-0"].self.pos;
