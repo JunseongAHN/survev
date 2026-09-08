@@ -19,7 +19,7 @@ export interface ScenarioGame {
 export const defaultScenarioSeed = "cpc-duo2v2-seed-0";
 export const defaultScenarioMapSize = 128;
 
-function normalizeSeed(seed: string | number | undefined): number | undefined {
+export function normalizeSeed(seed: string | number | undefined): number | undefined {
     if (seed === undefined) return undefined;
     if (typeof seed === "number") return Number.isFinite(seed) ? seed : undefined;
 

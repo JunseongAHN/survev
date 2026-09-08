@@ -40,10 +40,39 @@ Intentional limitations:
 - Seed support uses the existing map regeneration path and fixed scenario-region-relative player positions, but the full engine is not deterministic because other systems may still use `Math.random()` / unseeded randomness.
 - `events` is always an empty array. No fire, damage, death, LOS, or CPC metric hooks are included in PR-S1.
 
+## PR-S2: field scenario
+
+`scenarios/duo2v2Field.ts` builds the same duo 2v2 on the open `test_normal` field and drops a seeded loot layout with `lootBarn.addLoot()`: an identical starter kit next to each duo spawn (mirrored around the region center) plus one contested kit at the center. The layout is a pure function of `(scenario_region, seed)` via `util.seededRand`, so the same seed always produces the same loot positions. Buildings, obstacles and a CPC map definition are intentionally deferred.
+
+```ts
+const { game, seed, mapSize } = createScenarioGame({ seed: "cpc-duo2v2-seed-0" });
+const scenario = buildDuo2v2FieldScenario(game, { seed, mapSize }); // scenario.loot lists what was dropped
+```
+
+## PR-S3: action adapter
+
+`applyCpcAction.ts` turns a `CpcAction` (`move`, `aim`, `fire.start/hold`, `inputs`, `useItem`) into a native `InputMsg` and feeds it to `player.handleInput()`, so an agent goes through exactly the same code path as a client packet. `keys` mode (default) quantizes `move` to the 8 WASD directions, `touch` mode sends the continuous vector. `stepGame.ts` advances the offline game like the live server (`Config.gameTps` updates, `netSync()` every `gameTps / netSyncTps` ticks), which also keeps `player.visibleObjects` current.
+
+```ts
+applyCpcAction(player, { move: v2.create(1, 0), aim: v2.create(0, 1), fire: { hold: true } });
+stepGame(game, 100); // one game second
+```
+
+Tests: `tests/src/cpc_dev/applyCpcAction.test.ts` covers movement speed and quantization, single/auto fire counts, loot pickup, healing and reviving; `duo2v2FieldScenario.test.ts` covers loot determinism, mirroring and spawning.
+
+## PR-S5 (partial): event taps
+
+`eventTaps.ts` records `fire` / `damage` / `down` / `kill` events for a set of players by wrapping `WeaponManager.fireWeapon()`, `Player.damage()`, `Player.down()` and `Player.kill()` on those instances (`detach()` restores them). A fire event is only recorded when a bullet actually left the gun (clip ammo decreased); a damage event carries `amount` (HP removed after armor), `hpBefore/hpAfter`, the source player id and weapon, and is kept ahead of the down/kill event emitted inside `damage()`. Still to do for S5: loot / heal / revive taps and distance-gated `shots_heard`.
+
+```ts
+const taps = attachEventTaps(players, () => tick / Config.gameTps);
+// ... step the game ...
+taps.events; // [{ type: "fire", t, playerId, weapon, pos, dir }, { type: "damage", t, playerId, sourceId, amount, hpAfter, ... }, ...]
+```
+
 Next PRs:
 
-- PR-S2: solo 1v1v1v1 scenario using the same runner
-- PR-S3: CPC action to native InputMsg adapter
-- PR-S4: passive snapshot metrics
-- PR-S5: fire/damage/death event taps
+- PR-S4: agent observation from the client-visible object set
+- PR-S5 (rest): loot/heal/revive taps, shots_heard
 - PR-S6: EpisodeTrajectory JSONL export
+- PR-S7: Node/Python bridge (`reset` / `step`)
