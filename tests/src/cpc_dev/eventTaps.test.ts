@@ -40,7 +40,8 @@ test("taps record fire, damage and kill with the right attribution and HP bookke
 
     expect(hits.length).toBeGreaterThan(0);
     expect(hits.length).toBeLessThanOrEqual(fires.length);
-    expect(hits.every((e) => e.playerId === target.__id && e.sourceId === shooter.__id && e.weapon === "ak47")).toBe(true);
+    expect(hits.every((e) => e.playerId === target.__id && e.sourceId === shooter.__id && e.weapon === "ak47"))
+        .toBe(true);
     // every hit's bookkeeping is consistent and the hits add up to the full health bar
     for (const hit of hits) {
         expect(hit.amount).toBeGreaterThan(0);

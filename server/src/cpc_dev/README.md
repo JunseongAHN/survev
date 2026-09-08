@@ -70,9 +70,23 @@ const taps = attachEventTaps(players, () => tick / Config.gameTps);
 taps.events; // [{ type: "fire", t, playerId, weapon, pos, dir }, { type: "damage", t, playerId, sourceId, amount, hpAfter, ... }, ...]
 ```
 
+## PR-S4: agent observation
+
+`observation.ts` builds what an agent's client would know: `player.visibleObjects` (the set the server streams, refreshed by `netSync()`) cut to the view rectangle (`zoom + 4` half-width, 16:9), split into visible players / loot / obstacles / dead bodies, plus bullets inside the same rectangle, teammates from group status, own state, gas and alive counts. Enemy HP is never included and `observationAllowlist` is enforced by a test, so nothing outside the schema can leak in.
+
+## PR-S7: episode + bridge
+
+`episode.ts` (`CpcEpisode`) runs one offline field scenario step by step: `reset()` builds the game, scenario, loot and event taps; `step(actions, ticks)` applies `CpcAction`s of the controlled agents (held between steps like a held key), lets the built-in scripted policy (`scriptedPolicy.ts`, `chaser` or `idle`) drive the others every 0.1 s, advances `ticks` game ticks with the live netSync cadence, and returns observations for all agents, the events of the step, `done` and, at the end, per-agent metrics (survival time, HP mean/end, damage, kills, shots, team win, partner survival). `bridgeServer.ts` exposes this over a WebSocket (uWebSockets.js) with `reset` / `step` / batched `step` / `close` messages; the protocol is documented in `evolutionary-ai-battle/docs/survev-bridge-v0.md` and the Python client lives in that repo under `experiment/survev_rl/`.
+
+```sh
+pnpm cpc:bridge -- --port=8765     # ws://127.0.0.1:8765
+```
+
+Measured with the Python client on 2 vCPUs: `ticks=10` ~42x real time per env, `ticks=3` ~33x, `ticks=1` ~14x; 8 envs batched in one process ~136x aggregate.
+
+Tests: `episode.test.ts` (allowlisted observations, view-rectangle parity with `visibleObjects`, held/released inputs, elimination + metrics, time limit + events) and `bridgeServer.test.ts` (websocket round trip). The bridge test needs a platform where the uWebSockets.js binary loads (Windows / recent glibc).
+
 Next PRs:
 
-- PR-S4: agent observation from the client-visible object set
 - PR-S5 (rest): loot/heal/revive taps, shots_heard
-- PR-S6: EpisodeTrajectory JSONL export
-- PR-S7: Node/Python bridge (`reset` / `step`)
+- PR-S6: EpisodeTrajectory JSONL export (harness schema) from bridge episodes
