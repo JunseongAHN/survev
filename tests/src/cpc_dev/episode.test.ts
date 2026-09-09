@@ -1,6 +1,10 @@
 import { expect, test } from "vitest";
 import { CpcEpisode, type ObsMessage } from "../../../server/src/cpc_dev/episode.ts";
-import { type AgentObservation, observationAllowlist } from "../../../server/src/cpc_dev/observation.ts";
+import {
+    type AgentObservation,
+    observationAllowlist,
+    shotsHeardRadius,
+} from "../../../server/src/cpc_dev/observation.ts";
 import { ObjectType } from "../../../shared/net/objectSerializeFns.ts";
 import { v2 } from "../../../shared/utils/v2.ts";
 
@@ -418,4 +422,41 @@ test("scriptedOptions.engageDist: a racer with engageDist 0 races past the idler
     expect(last.info.objective!.captures["team-b"]).toBeGreaterThanOrEqual(3);
     expect(collectedEvents.filter((e) => e.type === "fire" && e.agent.startsWith("team-b"))).toHaveLength(0);
     expect(last.info.reason).toBe("time_limit");
+});
+
+// S4: heard shots go to the agents in earshot and to nobody else. The fixed layout puts the two
+// duos 64 u apart (out of earshot) and the partners 12.8 u apart (in earshot), so one team firing
+// separates the two branches deterministically.
+test("shots_heard reaches only agents within the audible radius, never the shooter", () => {
+    const episode = new CpcEpisode({
+        seed: "cpc-episode-test",
+        scripted: "idle",
+        controlled: agentIds,
+        loadout: "armed",
+    });
+    const first = episode.reset();
+    const posOf = (msg: ObsMessage, id: string) => msg.obs[id].self.pos;
+    expect(v2.distance(posOf(first, "team-a-0"), posOf(first, "team-a-1"))).toBeLessThan(shotsHeardRadius);
+    expect(v2.distance(posOf(first, "team-a-0"), posOf(first, "team-b-0"))).toBeGreaterThan(shotsHeardRadius);
+
+    episode.step({}, 100); // let the spawned weapon deploy before pulling the trigger
+
+    // only team-a-0 shoots; everyone else stands still
+    const msg = episode.step({ "team-a-0": { aim: { x: 0, y: 1 }, fire: { hold: true } } }, 50);
+    const fires = msg.events.filter((e) => e.type === "fire");
+    expect(fires.length).toBeGreaterThan(0);
+    expect(fires.every((e) => e.agent === "team-a-0")).toBe(true);
+
+    // the partner hears every shot, bucketed; the shooter and the far team hear nothing
+    expect(msg.obs["team-a-1"].shots_heard).toHaveLength(fires.length);
+    expect(msg.obs["team-a-1"].shots_heard.every((s) => s.range === "near")).toBe(true);
+    expect(msg.obs["team-a-0"].shots_heard).toHaveLength(0);
+    expect(msg.obs["team-b-0"].shots_heard).toHaveLength(0);
+    expect(msg.obs["team-b-1"].shots_heard).toHaveLength(0);
+
+    // and it is a snapshot of the step, not a running log: releasing the trigger clears it
+    const quiet = episode.step({ "team-a-0": {} }, 50);
+    expect(quiet.events.filter((e) => e.type === "fire")).toHaveLength(0);
+    expect(quiet.obs["team-a-1"].shots_heard).toHaveLength(0);
+    episode.close();
 });

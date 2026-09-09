@@ -1,6 +1,7 @@
-import type { DamageType } from "../../../shared/gameConfig.ts";
+import { type DamageType, GameConfig } from "../../../shared/gameConfig.ts";
 import { v2, type Vec2 } from "../../../shared/utils/v2.ts";
 import type { DamageParams } from "../game/objects/gameObject.ts";
+import type { Loot } from "../game/objects/loot.ts";
 import type { Player } from "../game/objects/player.ts";
 
 export interface FireEvent {
@@ -42,7 +43,37 @@ export interface KillEvent {
     sourceId: number | null;
 }
 
-export type CpcEvent = FireEvent | DamageEvent | DownEvent | KillEvent;
+export interface LootEvent {
+    type: "loot";
+    t: number;
+    playerId: number;
+    item: string;
+    /** the pile's count; when only part of it fits the engine re-drops the rest as fresh loot */
+    count: number;
+    pos: Vec2;
+}
+
+export interface HealEvent {
+    type: "heal";
+    t: number;
+    playerId: number;
+    /** the consumed item: a heal (bandage, healthkit) or a boost (soda, painkiller) */
+    item: string;
+    hpBefore: number;
+    hpAfter: number;
+    boostBefore: number;
+    boostAfter: number;
+}
+
+export interface ReviveEvent {
+    type: "revive";
+    t: number;
+    /** the revived teammate, as in `down` / `kill`; `sourceId` is the reviver */
+    playerId: number;
+    sourceId: number;
+}
+
+export type CpcEvent = FireEvent | DamageEvent | DownEvent | KillEvent | LootEvent | HealEvent | ReviveEvent;
 
 export interface EventTaps {
     events: CpcEvent[];
@@ -53,8 +84,18 @@ function sourceIdOf(params: DamageParams): number | null {
     return params.source?.__id ?? null;
 }
 
+/** Everything a loot pickup can change, as one comparable string. */
+function holdings(player: Player): string {
+    const inventory = Object.entries(player.inventory)
+        .map(([item, count]) => `${item}:${count}`)
+        .sort()
+        .join(",");
+    const weapons = player.weapons.map((w) => `${w.type}/${w.ammo}`).join(",");
+    return `${inventory}|${weapons}|${player.helmet}|${player.chest}|${player.backpack}|${player.scope}`;
+}
+
 /**
- * Records fire / damage / down / kill events for `players` by wrapping the engine methods on those instances.
+ * Records fire / damage / down / kill / loot / heal / revive events for `players` by wrapping the engine methods on those instances.
  * `now` supplies the current game time in seconds. Call `detach()` to restore the original methods.
  */
 export function attachEventTaps(players: Player[], now: () => number): EventTaps {
@@ -67,6 +108,8 @@ export function attachEventTaps(players: Player[], now: () => number): EventTaps
         const damage = player.damage;
         const down = player.down;
         const kill = player.kill;
+        const pickupLoot = player.pickupLoot;
+        const applyActionFunc = player.applyActionFunc;
 
         weaponManager.fireWeapon = (offHand: boolean, forceFire?: boolean) => {
             const weapon = weaponManager.weapons[weaponManager.curWeapIdx];
@@ -117,11 +160,51 @@ export function attachEventTaps(players: Player[], now: () => number): EventTaps
             events.push({ type: "kill", t: now(), playerId: player.__id, sourceId: sourceIdOf(params) });
         };
 
+        player.pickupLoot = (obj: Loot) => {
+            const item = obj.type;
+            const count = obj.count;
+            const pos = v2.copy(obj.pos);
+            const before = holdings(player);
+            pickupLoot.call(player, obj);
+            // pickupLoot always destroys the pile and re-drops whatever did not fit, so the
+            // player's own holdings are the only signal that something was actually taken
+            if (holdings(player) !== before) {
+                events.push({ type: "loot", t: now(), playerId: player.__id, item, count, pos });
+            }
+        };
+
+        // the engine calls applyActionFunc when a UseItem / Revive action completes
+        player.applyActionFunc = (actionFunc: (target: Player) => void) => {
+            const actionType = player.actionType;
+            const item = player.actionItem;
+            const hpBefore = player.health;
+            const boostBefore = player.boost;
+            const revived = player.playerBeingRevived;
+            const wasDowned = revived?.downed ?? false;
+            applyActionFunc.call(player, actionFunc);
+            if (actionType === GameConfig.Action.UseItem) {
+                events.push({
+                    type: "heal",
+                    t: now(),
+                    playerId: player.__id,
+                    item,
+                    hpBefore,
+                    hpAfter: player.health,
+                    boostBefore,
+                    boostAfter: player.boost,
+                });
+            } else if (actionType === GameConfig.Action.Revive && revived && wasDowned && !revived.downed) {
+                events.push({ type: "revive", t: now(), playerId: revived.__id, sourceId: player.__id });
+            }
+        };
+
         restores.push(() => {
             weaponManager.fireWeapon = fireWeapon;
             player.damage = damage;
             player.down = down;
             player.kill = kill;
+            player.pickupLoot = pickupLoot;
+            player.applyActionFunc = applyActionFunc;
         });
     }
 

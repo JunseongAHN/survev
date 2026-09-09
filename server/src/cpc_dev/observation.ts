@@ -20,6 +20,38 @@ export const observedInventory = [
     "556mm",
 ] as const;
 
+/**
+ * Gunshot audible radius in world units. The client plays another player's shot on the
+ * `otherPlayers` channel, whose `maxRange` is 48 with the default `rangeMult` of 1, so 48 u is
+ * what a human can hear. It reaches past the view rectangle (zoom 28 -> 32 u half-width), which
+ * is why heard shots are their own observation channel instead of being implied by `bullets`.
+ */
+export const shotsHeardRadius = 48;
+
+/** near / mid / far split the audible radius into thirds. */
+const nearRange = shotsHeardRadius / 3;
+const midRange = (2 * shotsHeardRadius) / 3;
+
+/** 8 compass points in world space, where y grows upward (N = +y) — not screen space. */
+const compass = ["E", "NE", "N", "NW", "W", "SW", "S", "SE"] as const;
+
+export interface ShotHeard {
+    dir: (typeof compass)[number];
+    range: "near" | "mid" | "far";
+}
+
+/** Buckets one shot for a listener, or null when the shot is out of earshot. */
+export function hearShot(listener: Vec2, shot: Vec2): ShotHeard | null {
+    const offset = v2.sub(shot, listener);
+    const dist = v2.length(offset);
+    if (dist > shotsHeardRadius) return null;
+    const index = (Math.round(Math.atan2(offset.y, offset.x) / (Math.PI / 4)) + 8) % 8;
+    return {
+        dir: compass[index],
+        range: dist <= nearRange ? "near" : dist <= midRange ? "mid" : "far",
+    };
+}
+
 export interface AgentObservation {
     self: {
         id: string;
@@ -68,6 +100,8 @@ export interface AgentObservation {
     alive_teams: number;
     /** shared objective point (race mode), shown to every agent like a HUD marker; null when there is none */
     objective: { index: number; pos: Vec2; radius: number; dist: number } | null;
+    /** other players' shots within earshot since the previous observation (8-point compass, world y-up) */
+    shots_heard: ShotHeard[];
 }
 
 /** Allowlist of every key an observation may contain, checked by tests so nothing leaks past the schema. */
@@ -84,6 +118,7 @@ export const observationAllowlist = {
         "alive_count",
         "alive_teams",
         "objective",
+        "shots_heard",
     ],
     self: [
         "id",
@@ -114,6 +149,7 @@ export const observationAllowlist = {
     dead_bodies: ["pos", "dist"],
     gas: ["mode", "rad", "pos", "rad_new", "pos_new"],
     objective: ["index", "pos", "radius", "dist"],
+    shots_heard: ["dir", "range"],
     vec2: ["x", "y"],
 } as const;
 
@@ -133,12 +169,14 @@ function vec(v: Vec2): Vec2 {
  * view rectangle (`zoom + 4` half-width, 16:9), which overshoots the rectangle by up to a grid cell; the
  * observation keeps only objects inside the rectangle itself, i.e. what the client actually draws.
  * Teammates come from group status (always known); enemy HP is never included.
+ * `shotsHeard` is supplied by the caller, which owns the fire events of the step (see `hearShot`).
  */
 export function extractAgentObservation(
     game: Game,
     player: Player,
     ids: ObservationIds,
     objective: AgentObservation["objective"] = null,
+    shotsHeard: ShotHeard[] = [],
 ): AgentObservation {
     const halfWidth = player.zoom + 4;
     const halfHeight = halfWidth / (16 / 9);
@@ -264,5 +302,6 @@ export function extractAgentObservation(
         alive_count: game.aliveCount,
         alive_teams: game.playerBarn.groups.filter((g) => g.livingPlayers.length > 0).length,
         objective,
+        shots_heard: shotsHeard,
     };
 }

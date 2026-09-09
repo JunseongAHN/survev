@@ -5,7 +5,13 @@ import { applyCpcAction, type CpcAction } from "./applyCpcAction.ts";
 import { createScenarioGame, defaultScenarioMapSize, defaultScenarioSeed, normalizeSeed } from "./createScenarioGame.ts";
 import { attachEventTaps, type CpcEvent, type EventTaps } from "./eventTaps.ts";
 import { type CaptureEvent, type ObjectiveOptions, RaceObjective } from "./objective.ts";
-import { type AgentObservation, extractAgentObservation, type ObservationIds } from "./observation.ts";
+import {
+    type AgentObservation,
+    extractAgentObservation,
+    hearShot,
+    type ObservationIds,
+    type ShotHeard,
+} from "./observation.ts";
 import { buildDuo2v2FieldScenario, type Duo2v2FieldScenario, type FieldLayout } from "./scenarios/duo2v2Field.ts";
 import { type ScriptedContext, type ScriptedOptions, scriptedAction, type ScriptedPolicyName } from "./scriptedPolicy.ts";
 import { seededRand } from "./seededRand.ts";
@@ -48,6 +54,11 @@ export interface BridgeEvent {
     amount?: number;
     hp_before?: number;
     hp_after?: number;
+    /** loot: the picked-up item and the pile's count. heal: the consumed item */
+    item?: string;
+    count?: number;
+    boost_before?: number;
+    boost_after?: number;
     downed?: boolean;
     dead?: boolean;
     pos?: { x: number; y: number };
@@ -366,6 +377,29 @@ export class CpcEpisode {
                     });
                     break;
                 }
+                case "loot":
+                    out.push({ type: "loot", t: e.t, agent, item: e.item, count: e.count, pos: e.pos });
+                    break;
+                case "heal":
+                    out.push({
+                        type: "heal",
+                        t: e.t,
+                        agent,
+                        item: e.item,
+                        hp_before: e.hpBefore,
+                        hp_after: e.hpAfter,
+                        boost_before: e.boostBefore,
+                        boost_after: e.boostAfter,
+                    });
+                    break;
+                case "revive":
+                    out.push({
+                        type: "revive",
+                        t: e.t,
+                        agent,
+                        source: this.agentIdOf.get(e.sourceId) ?? String(e.sourceId),
+                    });
+                    break;
                 case "down":
                 case "kill": {
                     const source = e.sourceId == null ? null : this.agentIdOf.get(e.sourceId) ?? String(e.sourceId);
@@ -414,13 +448,23 @@ export class CpcEpisode {
             agentIdOf: (p) => this.agentIdOf.get(p.__id) ?? p.name,
             teamIdOf: (p) => this.teamOf.get(this.agentIdOf.get(p.__id) ?? "") ?? String(p.groupId),
         };
+        // shots of this step, bucketed per listener from where each agent stands now
+        const fires = events.filter((e) => e.type === "fire" && e.pos);
         const obs: Record<string, AgentObservation> = {};
         for (const entry of this.scenario.players) {
+            const heard: ShotHeard[] = [];
+            for (const fire of fires) {
+                // your own shots are not "heard": you know you pulled the trigger
+                if (fire.agent === entry.agentId) continue;
+                const shot = hearShot(entry.player.pos, fire.pos!);
+                if (shot) heard.push(shot);
+            }
             obs[entry.agentId] = extractAgentObservation(
                 this.game,
                 entry.player,
                 ids,
                 this.objective ? this.objective.observe(entry.player.pos) : null,
+                heard,
             );
         }
         return {

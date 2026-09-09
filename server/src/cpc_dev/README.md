@@ -66,7 +66,9 @@ Tests: `tests/src/cpc_dev/applyCpcAction.test.ts` covers movement speed and quan
 
 ## PR-S5 (partial): event taps
 
-`eventTaps.ts` records `fire` / `damage` / `down` / `kill` events for a set of players by wrapping `WeaponManager.fireWeapon()`, `Player.damage()`, `Player.down()` and `Player.kill()` on those instances (`detach()` restores them). A fire event is only recorded when a bullet actually left the gun (clip ammo decreased); a damage event carries `amount` (HP removed after armor), `hpBefore/hpAfter`, the source player id and weapon, and is kept ahead of the down/kill event emitted inside `damage()`. Still to do for S5: loot / heal / revive taps and distance-gated `shots_heard`.
+`eventTaps.ts` records `fire` / `damage` / `down` / `kill` events for a set of players by wrapping `WeaponManager.fireWeapon()`, `Player.damage()`, `Player.down()` and `Player.kill()` on those instances (`detach()` restores them). A fire event is only recorded when a bullet actually left the gun (clip ammo decreased); a damage event carries `amount` (HP removed after armor), `hpBefore/hpAfter`, the source player id and weapon, and is kept ahead of the down/kill event emitted inside `damage()`.
+
+It also records `loot` / `heal` / `revive` the same way. `Player.pickupLoot()` always destroys the pile and re-drops whatever did not fit, so a `loot` event is emitted only when the player's own holdings (inventory, weapons, gear, scope) actually changed — a refused pickup produces nothing; `count` is the pile's count, not necessarily the amount taken. `heal` and `revive` come from `Player.applyActionFunc()`, which the engine calls when a `UseItem` / `Revive` action *completes*, so the event marks the moment the item was consumed or the teammate stood up rather than the moment the action started. `heal` covers heals (`bandage`, `healthkit`) and boosts (`soda`, `painkiller`) and carries both changes; `revive` names the revived teammate as the subject and the reviver as `sourceId`, like `down` / `kill`.
 
 ```ts
 const taps = attachEventTaps(players, () => tick / Config.gameTps);
@@ -90,6 +92,8 @@ Teams wear distinct body skins by default so a spectator (or a rendered frame) c
 
 `observation.ts` builds what an agent's client would know: `player.visibleObjects` (the set the server streams, refreshed by `netSync()`) cut to the view rectangle (`zoom + 4` half-width, 16:9), split into visible players / loot / obstacles / dead bodies, plus bullets inside the same rectangle, teammates from group status, own state, gas and alive counts. Enemy HP is never included and `observationAllowlist` is enforced by a test, so nothing outside the schema can leak in.
 
+`shots_heard` is the one channel that is not built from `visibleObjects`: the shots *other* players fired during the step, bucketed by `hearShot()` into one of 8 compass points and near / mid / far. `shotsHeardRadius` is 48 u, taken from the client's own audio — another player's shot plays on the `otherPlayers` channel whose `maxRange` is 48 with the default `rangeMult` of 1. That reaches past the view rectangle (zoom 28 -> 32 u half-width), which is the point: an agent hears fights it cannot see, exactly as a human does. Listeners beyond the radius get an empty list, nobody hears their own shots, and `dir` is **world** space with y growing upward (`"N"` = +y) — not the screen-space convention the harness `MOVE_LABELS` use. `CpcEpisode` owns the step's fire events, so it computes the per-agent lists and passes them in.
+
 ## PR-S7: episode + bridge
 
 `episode.ts` (`CpcEpisode`) runs one offline field scenario step by step: `reset()` builds the game, scenario, loot and event taps; `step(actions, ticks)` applies `CpcAction`s of the controlled agents (held between steps like a held key), lets the built-in scripted policy (`scriptedPolicy.ts`, `chaser` or `idle`) drive the others every 0.1 s, advances `ticks` game ticks with the live netSync cadence, and returns observations for all agents, the events of the step, `done` and, at the end, per-agent metrics (survival time, HP mean/end, damage, kills, shots, team win, partner survival). `bridgeServer.ts` exposes this over a WebSocket (uWebSockets.js) with `reset` / `step` / batched `step` / `close` messages; the protocol is documented in `evolutionary-ai-battle/docs/survev-bridge-v0.md` and the Python client lives in that repo under `experiment/survev_rl/`.
@@ -100,9 +104,8 @@ pnpm cpc:bridge -- --port=8765     # ws://127.0.0.1:8765
 
 Measured with the Python client on 2 vCPUs: `ticks=10` ~42x real time per env, `ticks=3` ~33x, `ticks=1` ~14x; 8 envs batched in one process ~136x aggregate.
 
-Tests: `episode.test.ts` (allowlisted observations, view-rectangle parity with `visibleObjects`, held/released inputs, elimination + metrics, time limit + events) and `bridgeServer.test.ts` (websocket round trip). The bridge test needs a platform where the uWebSockets.js binary loads (Windows / recent glibc).
+Tests: `episode.test.ts` (allowlisted observations, view-rectangle parity with `visibleObjects`, held/released inputs, elimination + metrics, time limit + events, `shots_heard` earshot gating), `shotsHeard.test.ts` (compass and distance buckets, the radius as a circle) and `bridgeServer.test.ts` (websocket round trip). The bridge test needs a platform where the uWebSockets.js binary loads (Windows / recent glibc).
 
 Next PRs:
 
-- PR-S5 (rest): loot/heal/revive taps, shots_heard
 - PR-S6: EpisodeTrajectory JSONL export (harness schema) from bridge episodes
