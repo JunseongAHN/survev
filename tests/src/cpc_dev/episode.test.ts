@@ -347,3 +347,75 @@ test("chaser behaviour is unchanged by the objective: it closes on enemies inste
     expect(last.info.objective!.captures["team-b"]).toBe(0);
     expect(last.info.reason).toBe("controlled_dead"); // idle team-a gets eliminated
 });
+
+test("scriptedOptions.reactionDelay: chasers hold fire until an enemy has been in fire range that long", () => {
+    const delay = 2;
+    const episode = new CpcEpisode({
+        seed: "cpc-episode-test",
+        scripted: "chaser",
+        scriptedOptions: { reactionDelay: delay },
+        controlled: ["team-a-0", "team-a-1"],
+        timeLimit: 30,
+    });
+    episode.reset();
+    let msg = episode.step({}, 10);
+    let firstContact: number | undefined;
+    let firstFire: number | undefined;
+    while (!msg.done && msg.t < 30) {
+        const a = ["team-a-0", "team-a-1"].map((id) => msg.obs[id].self);
+        const b = ["team-b-0", "team-b-1"].map((id) => msg.obs[id].self);
+        const inRange = b.some((bot) => a.some((tgt) => !tgt.dead && v2.distance(bot.pos, tgt.pos) < 30));
+        if (firstContact === undefined && inRange) firstContact = msg.t;
+        const fire = msg.events.find((e) => e.type === "fire" && e.agent.startsWith("team-b"));
+        if (firstFire === undefined && fire) firstFire = fire.t;
+        if (firstFire !== undefined) break;
+        msg = episode.step({}, 10);
+    }
+    expect(firstContact).toBeDefined();
+    expect(firstFire).toBeDefined();
+    // contact is sampled every 0.1 s step, so allow one decision interval of slack
+    expect(firstFire! - firstContact!).toBeGreaterThanOrEqual(delay - 0.15);
+});
+
+test("scriptedOptions.aimNoiseDeg: noisy chasers hit far less often than exact ones on the same seed", () => {
+    const hitRatio = (options: { aimNoiseDeg?: number }) => {
+        const episode = new CpcEpisode({
+            seed: "cpc-episode-test",
+            scripted: "chaser",
+            scriptedOptions: options,
+            controlled: ["team-a-0", "team-a-1"],
+            timeLimit: 30,
+        });
+        episode.reset();
+        const last = runUntilDone(episode, {}, 30);
+        const m = last.info.metrics ?? null;
+        const shots = collectedEvents.filter((e) => e.type === "fire" && e.agent.startsWith("team-b")).length;
+        const hits = collectedEvents.filter((e) => e.type === "damage" && e.source?.startsWith("team-b")).length;
+        episode.close();
+        return { shots, hits, ratio: hits / Math.max(1, shots), reason: last.info.reason, metrics: m };
+    };
+    const exact = hitRatio({});
+    const noisy = hitRatio({ aimNoiseDeg: 60 });
+    expect(exact.shots).toBeGreaterThan(0);
+    expect(noisy.shots).toBeGreaterThan(0);
+    expect(exact.ratio).toBeGreaterThan(0.3);
+    expect(noisy.ratio).toBeLessThan(exact.ratio * 0.6);
+});
+
+test("scriptedOptions.engageDist: a racer with engageDist 0 races past the idlers without ever fighting", () => {
+    const episode = new CpcEpisode({
+        seed: "cpc-racer-test",
+        scripted: "racer",
+        scriptedOptions: { engageDist: 0 },
+        controlled: ["team-a-0", "team-a-1"],
+        objective: { mode: "race", radius: 4, minDist: 30, maxDist: 70 },
+        endOnElimination: false,
+        layout: "random",
+        timeLimit: 30,
+    });
+    episode.reset();
+    const last = runUntilDone(episode, {}, 30);
+    expect(last.info.objective!.captures["team-b"]).toBeGreaterThanOrEqual(3);
+    expect(collectedEvents.filter((e) => e.type === "fire" && e.agent.startsWith("team-b"))).toHaveLength(0);
+    expect(last.info.reason).toBe("time_limit");
+});

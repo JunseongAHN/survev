@@ -7,7 +7,8 @@ import { attachEventTaps, type CpcEvent, type EventTaps } from "./eventTaps.ts";
 import { type CaptureEvent, type ObjectiveOptions, RaceObjective } from "./objective.ts";
 import { type AgentObservation, extractAgentObservation, type ObservationIds } from "./observation.ts";
 import { buildDuo2v2FieldScenario, type Duo2v2FieldScenario, type FieldLayout } from "./scenarios/duo2v2Field.ts";
-import { type ScriptedContext, scriptedAction, type ScriptedPolicyName } from "./scriptedPolicy.ts";
+import { type ScriptedContext, type ScriptedOptions, scriptedAction, type ScriptedPolicyName } from "./scriptedPolicy.ts";
+import { seededRand } from "./seededRand.ts";
 
 export interface EpisodeOptions {
     scenario?: "duo2v2_field";
@@ -18,6 +19,8 @@ export interface EpisodeOptions {
     /** agent ids driven through step(); the rest use the scripted policy */
     controlled?: string[];
     scripted?: ScriptedPolicyName;
+    /** strength knobs of the scripted opponents (aim noise, reaction delay, racer engage distance); default exact */
+    scriptedOptions?: ScriptedOptions;
     /** "armed" starts everyone with a loaded ak47 and reserve ammo (curriculum helper); default "fists" */
     loadout?: "fists" | "armed";
     /** "random" rotates the spawn axis and draws the spawn distance per seed (see `FieldLayout`); default "fixed" */
@@ -95,6 +98,8 @@ export interface ObsMessage {
 const tps = Config.gameTps;
 const netSyncEvery = Math.round(Config.gameTps / Config.netSyncTps);
 const scriptedDecisionTicks = 10;
+/** seededRand stream for the scripted opponents' aim noise (0 = loot, 7919 = spawns, 104729 = objective) */
+const scriptedSeedStream = 15485863;
 
 interface AgentStats {
     aliveTicks: number;
@@ -127,6 +132,8 @@ export class CpcEpisode {
     private done = false;
     private objective?: RaceObjective;
     private pendingCaptures: CaptureEvent[] = [];
+    private scriptedRand: () => number = Math.random;
+    private contactSince = new Map<number, number>();
     private info: EpisodeInfo = { alive_teams: 2, winner_team: null, reason: null, metrics: null, objective: null };
 
     constructor(options: EpisodeOptions = {}) {
@@ -137,6 +144,7 @@ export class CpcEpisode {
             timeLimit: options.timeLimit ?? 60,
             controlled: options.controlled ?? ["team-a-0", "team-a-1"],
             scripted: options.scripted ?? "chaser",
+            scriptedOptions: options.scriptedOptions ?? {},
             loadout: options.loadout ?? "fists",
             layout: options.layout ?? "fixed",
             objective: options.objective ?? { mode: "none" },
@@ -176,6 +184,9 @@ export class CpcEpisode {
         this.eventCursor = 0;
         this.done = false;
         this.pendingCaptures = [];
+        const rand = seededRand(normalizeSeed(seed) ?? 0, scriptedSeedStream);
+        this.scriptedRand = () => rand();
+        this.contactSince = new Map();
         const { mode, ...objectiveOptions } = this.options.objective;
         this.objective = mode === "race"
             ? new RaceObjective(this.scenario.scenarioRegion, normalizeSeed(seed) ?? 0, objectiveOptions, 0)
@@ -216,6 +227,9 @@ export class CpcEpisode {
                     players: this.players,
                     t: this.t,
                     objective: this.objective ? { pos: this.objective.current.pos, radius: this.objective.radius } : undefined,
+                    options: this.options.scriptedOptions,
+                    rand: this.scriptedRand,
+                    contactSince: this.contactSince,
                 };
                 for (const bot of scripted) applyCpcAction(bot, scriptedAction(this.options.scripted, ctx, bot));
             }
