@@ -5,7 +5,7 @@ import { applyCpcAction, type CpcAction } from "./applyCpcAction.ts";
 import { createScenarioGame, defaultScenarioMapSize, defaultScenarioSeed } from "./createScenarioGame.ts";
 import { attachEventTaps, type CpcEvent, type EventTaps } from "./eventTaps.ts";
 import { type AgentObservation, extractAgentObservation, type ObservationIds } from "./observation.ts";
-import { buildDuo2v2FieldScenario, type Duo2v2FieldScenario } from "./scenarios/duo2v2Field.ts";
+import { buildDuo2v2FieldScenario, type Duo2v2FieldScenario, type FieldLayout } from "./scenarios/duo2v2Field.ts";
 import { type ScriptedContext, scriptedAction, type ScriptedPolicyName } from "./scriptedPolicy.ts";
 
 export interface EpisodeOptions {
@@ -19,6 +19,8 @@ export interface EpisodeOptions {
     scripted?: ScriptedPolicyName;
     /** "armed" starts everyone with a loaded ak47 and reserve ammo (curriculum helper); default "fists" */
     loadout?: "fists" | "armed";
+    /** "random" rotates the spawn axis and draws the spawn distance per seed (see `FieldLayout`); default "fixed" */
+    layout?: FieldLayout;
 }
 
 export interface BridgeEvent {
@@ -115,6 +117,7 @@ export class CpcEpisode {
             controlled: options.controlled ?? ["team-a-0", "team-a-1"],
             scripted: options.scripted ?? "chaser",
             loadout: options.loadout ?? "fists",
+            layout: options.layout ?? "fixed",
         };
     }
 
@@ -126,7 +129,7 @@ export class CpcEpisode {
         this.taps?.detach();
         const { game, seed, mapSize } = createScenarioGame({ seed: this.options.seed, mapSize: this.options.mapSize });
         this.game = game;
-        this.scenario = buildDuo2v2FieldScenario(game, { seed, mapSize });
+        this.scenario = buildDuo2v2FieldScenario(game, { seed, mapSize, layout: this.options.layout });
         this.players = this.scenario.players.map((p) => p.player);
         this.agentIdOf = new Map(this.scenario.players.map((p) => [p.player.__id, p.agentId]));
         this.teamOf = new Map(this.scenario.players.map((p) => [p.agentId, p.teamId]));

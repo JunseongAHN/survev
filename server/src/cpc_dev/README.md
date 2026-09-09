@@ -44,6 +44,8 @@ Intentional limitations:
 
 `scenarios/duo2v2Field.ts` builds the same duo 2v2 on the open `test_normal` field and drops a seeded loot layout with `lootBarn.addLoot()`: an identical starter kit next to each duo spawn (mirrored around the region center) plus one contested kit at the center. The layout is a pure function of `(scenario_region, seed)` via `util.seededRand`, so the same seed always produces the same loot positions. Buildings, obstacles and a CPC map definition are intentionally deferred.
 
+`layout: "random"` (default `"fixed"`) rotates the spawn axis by a seeded angle and draws the duo-to-center distance from [24, 44] u; team-b is team-a mirrored across the center, everyone faces the center and the team kits move with the spawns (`scenario.spawnLayout` reports angle, radius, spawns and facing). It exists because a PPO agent trained on the fixed layout learned to aim at the constant spawn direction instead of at enemies. Seeds are mixed (xorshift-multiply) before Park-Miller because its first draws are nearly linear in the seed and string seeds like `run-0`/`run-1` hash to neighbours; this also changed the fixed layout's scatter for a given seed compared with builds before 2026-09-09.
+
 ```ts
 const { game, seed, mapSize } = createScenarioGame({ seed: "cpc-duo2v2-seed-0" });
 const scenario = buildDuo2v2FieldScenario(game, { seed, mapSize }); // scenario.loot lists what was dropped

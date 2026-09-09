@@ -1,4 +1,4 @@
-import { v2 } from "../../../../shared/utils/v2.ts";
+import { v2, type Vec2 } from "../../../../shared/utils/v2.ts";
 import type { Game } from "../../game/game.ts";
 import type { Group } from "../../game/group.ts";
 import type { Player } from "../../game/objects/player.ts";
@@ -35,6 +35,8 @@ export interface ScenarioRegion {
 export interface Duo2v2ScenarioOptions {
     seed: string | number;
     mapSize: number;
+    /** per-agent spawn overrides; agents not listed keep the default west/east spawns */
+    spawns?: Partial<Record<CpcAgentId, Vec2>>;
 }
 
 const cpcTeams = {
@@ -75,7 +77,7 @@ export function buildDuo2v2Scenario(
             player: game.playerBarn.addTestPlayer({
                 group: groupA,
                 name: "team-a-0",
-                pos: v2.create(leftX, centerY - teammateOffset),
+                pos: options.spawns?.["team-a-0"] ?? v2.create(leftX, centerY - teammateOffset),
             }),
         },
         {
@@ -85,7 +87,7 @@ export function buildDuo2v2Scenario(
             player: game.playerBarn.addTestPlayer({
                 group: groupA,
                 name: "team-a-1",
-                pos: v2.create(leftX, centerY + teammateOffset),
+                pos: options.spawns?.["team-a-1"] ?? v2.create(leftX, centerY + teammateOffset),
             }),
         },
         {
@@ -95,7 +97,7 @@ export function buildDuo2v2Scenario(
             player: game.playerBarn.addTestPlayer({
                 group: groupB,
                 name: "team-b-0",
-                pos: v2.create(rightX, centerY - teammateOffset),
+                pos: options.spawns?.["team-b-0"] ?? v2.create(rightX, centerY - teammateOffset),
             }),
         },
         {
@@ -105,7 +107,7 @@ export function buildDuo2v2Scenario(
             player: game.playerBarn.addTestPlayer({
                 group: groupB,
                 name: "team-b-1",
-                pos: v2.create(rightX, centerY + teammateOffset),
+                pos: options.spawns?.["team-b-1"] ?? v2.create(rightX, centerY + teammateOffset),
             }),
         },
     ];
