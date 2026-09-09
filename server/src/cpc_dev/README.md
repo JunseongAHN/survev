@@ -58,6 +58,8 @@ applyCpcAction(player, { move: v2.create(1, 0), aim: v2.create(0, 1), fire: { ho
 stepGame(game, 100); // one game second
 ```
 
+`inputs` accepts `Input` enum numbers or their names (`"Interact"`), which is what the bridge sends; unknown values throw so a bad payload surfaces as a bridge `error` instead of a silently ignored key press (this was a real bug: named inputs were dropped, so bridge agents could not pick up, equip or reload until the fix).
+
 Tests: `tests/src/cpc_dev/applyCpcAction.test.ts` covers movement speed and quantization, single/auto fire counts, loot pickup, healing and reviving; `duo2v2FieldScenario.test.ts` covers loot determinism, mirroring and spawning.
 
 ## PR-S5 (partial): event taps

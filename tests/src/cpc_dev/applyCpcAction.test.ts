@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import { applyCpcAction, buildInputMsg } from "../../../server/src/cpc_dev/applyCpcAction.ts";
+import { applyCpcAction, buildInputMsg, toInput } from "../../../server/src/cpc_dev/applyCpcAction.ts";
 import { stepGame } from "../../../server/src/cpc_dev/stepGame.ts";
 import { Config } from "../../../server/src/config.ts";
 import { GameConfig, TeamMode } from "../../../shared/gameConfig.ts";
@@ -47,6 +47,16 @@ test("adapter builds the same InputMsg a client would send", () => {
     });
 
     expect(msg).toEqual(expected);
+});
+
+test("inputs are accepted as enum numbers or names (the bridge sends names)", () => {
+    const byNumber = buildInputMsg({ inputs: [GameConfig.Input.Interact, GameConfig.Input.Reload] });
+    const byName = buildInputMsg({ inputs: ["Interact", "Reload"] });
+    expect(byName).toEqual(byNumber);
+    expect(byName.inputs).toEqual([GameConfig.Input.Interact, GameConfig.Input.Reload]);
+    expect(toInput("EquipPrimary")).toBe(GameConfig.Input.EquipPrimary);
+    expect(() => toInput("Teleport")).toThrow(/unknown input/);
+    expect(() => toInput(999)).toThrow(/unknown input/);
 });
 
 test("keys mode moves at the server speed and quantizes to 8 directions", () => {

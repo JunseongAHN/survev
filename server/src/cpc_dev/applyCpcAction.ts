@@ -1,4 +1,4 @@
-import type { Input } from "../../../shared/gameConfig.ts";
+import { Input } from "../../../shared/gameConfig.ts";
 import { InputMsg } from "../../../shared/net/inputMsg.ts";
 import { v2, type Vec2 } from "../../../shared/utils/v2.ts";
 import type { Player } from "../game/objects/player.ts";
@@ -10,8 +10,18 @@ export interface CpcAction {
     aim?: Vec2;
     /** `start` is edge-triggered (send it on the tick the trigger is pulled), `hold` is level-triggered. */
     fire?: { start?: boolean; hold?: boolean };
-    inputs?: Input[];
+    /** `Input` numbers or their names (`"Interact"`), which is what the bridge sends. */
+    inputs?: Array<Input | keyof typeof Input>;
     useItem?: string;
+}
+
+/** Resolves an `Input` given as its enum number or name; anything else throws (bad bridge payload). */
+export function toInput(input: Input | string): Input {
+    const value = typeof input === "string" ? Input[input as keyof typeof Input] : input;
+    if (typeof value !== "number" || Input[value] === undefined) {
+        throw new Error(`unknown input ${JSON.stringify(input)}`);
+    }
+    return value;
 }
 
 /** `keys` quantizes `move` to the 8 directions WASD can express, `touch` sends it as a continuous vector. */
@@ -40,7 +50,7 @@ export function buildInputMsg(action: CpcAction, moveMode: CpcMoveMode = "keys")
     msg.shootStart = action.fire?.start ?? false;
     msg.shootHold = action.fire?.hold ?? false;
     for (const input of action.inputs ?? []) {
-        msg.addInput(input);
+        msg.addInput(toInput(input));
     }
     msg.useItem = action.useItem ?? "";
 
