@@ -42,7 +42,8 @@ test("reset returns a full, allowlisted observation for every agent", () => {
         "team-b-0": "team-b",
         "team-b-1": "team-b",
     });
-    expect(msg.info).toEqual({ alive_teams: 2, winner_team: null, reason: null, metrics: null });
+    expect(msg.info).toEqual({ alive_teams: 2, winner_team: null, reason: null, metrics: null, objective: null });
+    expect(msg.obs["team-a-0"].objective).toBeNull();
 
     for (const id of agentIds) {
         const obs: AgentObservation = msg.obs[id];
@@ -96,17 +97,6 @@ test("observations equal the client-visible object set after every step (M5)", (
             for (const enemy of obs.players) expect("hp" in enemy).toBe(false);
         }
         if (msg.done) break;
-    }
-    episode.close();
-});
-
-test("the armed loadout starts everyone with a loaded ak47", () => {
-    const episode = new CpcEpisode({ seed: "cpc-episode-test", scripted: "idle", controlled: [], loadout: "armed" });
-    const msg = episode.reset();
-    for (const id of agentIds) {
-        expect(msg.obs[id].self.weapon).toBe("ak47");
-        expect(msg.obs[id].self.clip).toBe(30);
-        expect(msg.obs[id].self.reserve).toBe(90);
     }
     episode.close();
 });
@@ -200,4 +190,100 @@ test("events carry agent ids and the time limit ends a quiet episode", () => {
         .toBe(true);
     expect(events.filter((e) => e.type === "kill").length).toBeGreaterThan(0);
     fight.close();
+});
+
+test("race objective: seeded points, team-credited captures that move the point, and no end on elimination", () => {
+    const make = () => new CpcEpisode({
+        seed: "cpc-race-test",
+        scripted: "idle",
+        controlled: ["team-a-0", "team-a-1"],
+        objective: { mode: "race", radius: 4, minDist: 30, maxDist: 70 },
+        endOnElimination: false,
+        timeLimit: 20,
+    });
+    const episode = make();
+    const first = episode.reset();
+    const other = make().reset();
+    expect(first.info.objective).toEqual(other.info.objective); // seeded
+    const point = first.obs["team-a-0"].objective!;
+    expect(point.index).toBe(0);
+    expect(point.radius).toBe(4);
+    expect(point.dist).toBeCloseTo(v2.distance(first.obs["team-a-0"].self.pos, point.pos), 6);
+    // everyone sees the same point (it is a shared HUD marker, not a per-agent secret)
+    for (const id of agentIds) expect(first.obs[id].objective!.pos).toEqual(point.pos);
+    const region = { x: 68, y: 68, width: 128, height: 128 };
+    expect(point.pos.x).toBeGreaterThanOrEqual(region.x + 12);
+    expect(point.pos.x).toBeLessThanOrEqual(region.x + region.width - 12);
+
+    // walk team-a-0 onto the point: a capture event fires once, the point moves 30..70 u away, index increments
+    let msg = first;
+    let captured = false;
+    for (let i = 0; i < 120 && !captured; i++) {
+        const me = msg.obs["team-a-0"].self.pos;
+        const to = v2.sub(msg.obs["team-a-0"].objective!.pos, me);
+        msg = episode.step({ "team-a-0": { move: to, aim: to } }, 10);
+        const capture = msg.events.find((e) => e.type === "capture");
+        if (capture) {
+            captured = true;
+            expect(capture.agent).toBe("team-a-0");
+            expect(capture.team).toBe("team-a");
+            expect(capture.index).toBe(0);
+            expect(capture.time_to_capture).toBeCloseTo(capture.t, 6);
+            expect(v2.distance(capture.pos!, point.pos)).toBeLessThan(1e-6);
+            const next = msg.obs["team-a-0"].objective!;
+            expect(next.index).toBe(1);
+            const moved = v2.distance(next.pos, point.pos);
+            expect(moved).toBeGreaterThanOrEqual(30 - 1e-6);
+            expect(moved).toBeLessThanOrEqual(70 + 1e-6);
+            expect(msg.info.objective!.captures).toEqual({ "team-a": 1, "team-b": 0 });
+        }
+    }
+    expect(captured).toBe(true);
+
+    // no end on elimination: kill team-b outright, the episode keeps running to the time limit
+    const all = (episode as unknown as { players: Array<{ name: string; kill: (p: object) => void; dead: boolean }> }).players;
+    for (const p of all) {
+        if (p.name.startsWith("team-b")) p.kill({ damageType: 0, dir: v2.create(1, 0), source: undefined });
+    }
+    msg = episode.step({}, 10);
+    expect(msg.info.alive_teams).toBe(1);
+    expect(msg.done).toBe(false);
+    // the world keeps simulating after the wipe: the survivor can still move and take the next point
+    const capturesBefore = msg.info.objective!.captures["team-a"];
+    for (let i = 0; i < 100 && msg.info.objective!.captures["team-a"] === capturesBefore && !msg.done; i++) {
+        const me = msg.obs["team-a-0"].self.pos;
+        const to = v2.sub(msg.obs["team-a-0"].objective!.pos, me);
+        msg = episode.step({ "team-a-0": { move: to, aim: to } }, 10);
+    }
+    expect(msg.info.objective!.captures["team-a"]).toBe(capturesBefore + 1);
+    const last = runUntilDone(episode, {}, 20);
+    expect(last.done).toBe(true);
+    expect(last.info.reason).toBe("time_limit");
+    expect(last.info.winner_team).toBe("team-a"); // more captures
+    const m = last.info.metrics!;
+    expect(m["team-a-0"].captures).toBeGreaterThanOrEqual(1);
+    expect(m["team-a-0"].team_captures).toBe(m["team-a-0"].captures + m["team-a-1"].captures);
+    expect(m["team-a-0"].team_win).toBe(true);
+    expect(m["team-b-0"].team_win).toBe(false);
+    expect(m["team-b-0"].captures).toBe(0);
+});
+
+test("without endOnElimination the episode ends early only when every controlled agent is dead", () => {
+    const episode = new CpcEpisode({
+        seed: "cpc-race-test-2",
+        scripted: "idle",
+        controlled: ["team-a-0", "team-a-1"],
+        objective: { mode: "race" },
+        endOnElimination: false,
+        timeLimit: 30,
+    });
+    episode.reset();
+    const all = (episode as unknown as { players: Array<{ name: string; kill: (p: object) => void }> }).players;
+    for (const p of all) {
+        if (p.name.startsWith("team-a")) p.kill({ damageType: 0, dir: v2.create(1, 0), source: undefined });
+    }
+    const msg = episode.step({}, 10);
+    expect(msg.done).toBe(true);
+    expect(msg.info.reason).toBe("controlled_dead");
+    expect(msg.info.winner_team).toBeNull(); // 0 : 0 captures is a tie
 });

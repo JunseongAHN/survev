@@ -2,8 +2,9 @@ import { GameConfig } from "../../../shared/gameConfig.ts";
 import { Config } from "../config.ts";
 import type { Player } from "../game/objects/player.ts";
 import { applyCpcAction, type CpcAction } from "./applyCpcAction.ts";
-import { createScenarioGame, defaultScenarioMapSize, defaultScenarioSeed } from "./createScenarioGame.ts";
+import { createScenarioGame, defaultScenarioMapSize, defaultScenarioSeed, normalizeSeed } from "./createScenarioGame.ts";
 import { attachEventTaps, type CpcEvent, type EventTaps } from "./eventTaps.ts";
+import { type CaptureEvent, type ObjectiveOptions, RaceObjective } from "./objective.ts";
 import { type AgentObservation, extractAgentObservation, type ObservationIds } from "./observation.ts";
 import { buildDuo2v2FieldScenario, type Duo2v2FieldScenario, type FieldLayout } from "./scenarios/duo2v2Field.ts";
 import { type ScriptedContext, scriptedAction, type ScriptedPolicyName } from "./scriptedPolicy.ts";
@@ -21,12 +22,24 @@ export interface EpisodeOptions {
     loadout?: "fists" | "armed";
     /** "random" rotates the spawn axis and draws the spawn distance per seed (see `FieldLayout`); default "fixed" */
     layout?: FieldLayout;
+    /** shared objective; `{ mode: "race" }` turns on the moving capture point (see `objective.ts`); default none */
+    objective?: ObjectiveOptions;
+    /**
+     * `true` (default): the episode ends when one team is left. `false`: it runs to the time limit even
+     * after a team is wiped (a race keeps paying points to the survivors) and ends early only when every
+     * controlled agent is dead.
+     */
+    endOnElimination?: boolean;
 }
 
 export interface BridgeEvent {
-    type: CpcEvent["type"];
+    type: CpcEvent["type"] | "capture";
     t: number;
     agent: string;
+    /** capture: the capturing agent's team, point index, seconds the point was up */
+    team?: string;
+    index?: number;
+    time_to_capture?: number;
     source?: string | null;
     weapon?: string | null;
     amount?: number;
@@ -52,13 +65,18 @@ export interface AgentMetrics {
     team_win: boolean;
     partner_survival_time: number;
     partner_hp_end: number;
+    /** race objective: points this agent touched first / points its team took */
+    captures: number;
+    team_captures: number;
 }
 
 export interface EpisodeInfo {
     alive_teams: number;
     winner_team: string | null;
-    reason: "elimination" | "time_limit" | null;
+    reason: "elimination" | "time_limit" | "controlled_dead" | null;
     metrics: Record<string, AgentMetrics> | null;
+    /** race objective: the current point and the captures per team so far */
+    objective: { index: number; pos: { x: number; y: number }; radius: number; captures: Record<string, number> } | null;
 }
 
 export interface ObsMessage {
@@ -87,6 +105,7 @@ interface AgentStats {
     kills: number;
     shots: number;
     hitsGiven: number;
+    captures: number;
 }
 
 /**
@@ -106,7 +125,9 @@ export class CpcEpisode {
     private tick = 0;
     private eventCursor = 0;
     private done = false;
-    private info: EpisodeInfo = { alive_teams: 2, winner_team: null, reason: null, metrics: null };
+    private objective?: RaceObjective;
+    private pendingCaptures: CaptureEvent[] = [];
+    private info: EpisodeInfo = { alive_teams: 2, winner_team: null, reason: null, metrics: null, objective: null };
 
     constructor(options: EpisodeOptions = {}) {
         this.options = {
@@ -118,6 +139,8 @@ export class CpcEpisode {
             scripted: options.scripted ?? "chaser",
             loadout: options.loadout ?? "fists",
             layout: options.layout ?? "fixed",
+            objective: options.objective ?? { mode: "none" },
+            endOnElimination: options.endOnElimination ?? true,
         };
     }
 
@@ -146,12 +169,24 @@ export class CpcEpisode {
                 kills: 0,
                 shots: 0,
                 hitsGiven: 0,
+                captures: 0,
             }]),
         );
         this.tick = 0;
         this.eventCursor = 0;
         this.done = false;
-        this.info = { alive_teams: this.aliveTeams(), winner_team: null, reason: null, metrics: null };
+        this.pendingCaptures = [];
+        const { mode, ...objectiveOptions } = this.options.objective;
+        this.objective = mode === "race"
+            ? new RaceObjective(this.scenario.scenarioRegion, normalizeSeed(seed) ?? 0, objectiveOptions, 0)
+            : undefined;
+        this.info = {
+            alive_teams: this.aliveTeams(),
+            winner_team: null,
+            reason: null,
+            metrics: null,
+            objective: this.objectiveInfo(),
+        };
         if (this.options.loadout === "armed") {
             for (const player of this.players) {
                 player.weaponManager.setWeapon(GameConfig.WeaponSlot.Primary, "ak47", 30);
@@ -183,6 +218,11 @@ export class CpcEpisode {
             this.tick++;
             if (this.tick % netSyncEvery === 0) this.game.netSync();
             this.accumulate();
+            const capture = this.objective?.tick(this.players, this.t);
+            if (capture) {
+                this.pendingCaptures.push(capture);
+                this.stats.get(this.agentIdOf.get(capture.playerId)!)!.captures++;
+            }
             if (this.checkDone()) break;
         }
         if (this.tick % netSyncEvery !== 0) this.game.netSync();
@@ -217,26 +257,65 @@ export class CpcEpisode {
         }
     }
 
+    private teamCaptures(): Record<string, number> {
+        const out: Record<string, number> = {};
+        for (const team of new Set(this.teamOf.values())) out[team] = 0;
+        for (const entry of this.scenario.players) out[entry.teamId] += this.stats.get(entry.agentId)!.captures;
+        return out;
+    }
+
+    private objectiveInfo(): EpisodeInfo["objective"] {
+        if (!this.objective) return null;
+        const { index, pos, radius } = this.objective.current;
+        return { index, pos: { x: pos.x, y: pos.y }, radius, captures: this.teamCaptures() };
+    }
+
+    /** Race: the team with more captures; otherwise the surviving team (null on a tie / both alive). */
+    private winner(): string | null {
+        if (this.objective) {
+            const captures = Object.entries(this.teamCaptures()).sort((a, b) => b[1] - a[1]);
+            return captures.length > 1 && captures[0][1] === captures[1][1] ? null : captures[0][0];
+        }
+        const alive = new Set(this.players.filter((p) => !p.dead).map((p) => this.teamOf.get(this.agentIdOf.get(p.__id)!)!));
+        return alive.size === 1 ? [...alive][0] : null;
+    }
+
     private checkDone(): boolean {
         const aliveTeams = this.aliveTeams();
         this.info.alive_teams = aliveTeams;
-        if (aliveTeams <= 1) {
-            const survivor = this.players.find((p) => !p.dead);
-            this.info.winner_team = survivor ? this.teamOf.get(this.agentIdOf.get(survivor.__id)!)! : null;
+        const controlledDead = this.options.controlled.length > 0
+            && this.options.controlled.every((id) => this.playerOf(id).dead);
+        if (this.options.endOnElimination && aliveTeams <= 1) {
             this.info.reason = "elimination";
-            this.done = true;
+        } else if (!this.options.endOnElimination && (controlledDead || aliveTeams === 0)) {
+            this.info.reason = "controlled_dead";
         } else if (this.t >= this.options.timeLimit - 1e-9) {
-            this.info.winner_team = null;
             this.info.reason = "time_limit";
-            this.done = true;
+        } else {
+            return false;
         }
-        return this.done;
+        this.info.winner_team = this.winner();
+        this.done = true;
+        return true;
     }
 
     private drainEvents(): BridgeEvent[] {
         const fresh = this.taps.events.slice(this.eventCursor);
         this.eventCursor = this.taps.events.length;
         const out: BridgeEvent[] = [];
+        for (const c of this.pendingCaptures) {
+            const agent = this.agentIdOf.get(c.playerId) ?? String(c.playerId);
+            out.push({
+                type: "capture",
+                t: c.t,
+                agent,
+                team: this.teamOf.get(agent),
+                index: c.index,
+                pos: { x: c.pos.x, y: c.pos.y },
+                time_to_capture: c.timeToCapture,
+            });
+        }
+        this.pendingCaptures = [];
         for (const e of fresh) {
             const agent = this.agentIdOf.get(e.playerId) ?? String(e.playerId);
             const stats = this.stats.get(agent);
@@ -280,6 +359,7 @@ export class CpcEpisode {
                 }
             }
         }
+        out.sort((a, b) => a.t - b.t);
         return out;
     }
 
@@ -303,6 +383,8 @@ export class CpcEpisode {
                 team_win: this.info.winner_team === entry.teamId,
                 partner_survival_time: partnerStats ? partnerStats.aliveTicks / tps : 0,
                 partner_hp_end: partner && !partner.player.dead ? partner.player.health : 0,
+                captures: s.captures,
+                team_captures: s.captures + (partnerStats?.captures ?? 0),
             };
         }
         return result;
@@ -315,7 +397,12 @@ export class CpcEpisode {
         };
         const obs: Record<string, AgentObservation> = {};
         for (const entry of this.scenario.players) {
-            obs[entry.agentId] = extractAgentObservation(this.game, entry.player, ids);
+            obs[entry.agentId] = extractAgentObservation(
+                this.game,
+                entry.player,
+                ids,
+                this.objective ? this.objective.observe(entry.player.pos) : null,
+            );
         }
         return {
             type: "obs",
@@ -326,7 +413,7 @@ export class CpcEpisode {
             teams: Object.fromEntries(this.teamOf),
             obs,
             events,
-            info: { ...this.info },
+            info: { ...this.info, objective: this.objectiveInfo() },
         };
     }
 }

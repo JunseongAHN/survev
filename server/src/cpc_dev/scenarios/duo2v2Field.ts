@@ -1,7 +1,7 @@
-import { util } from "../../../../shared/utils/util.ts";
 import { v2, type Vec2 } from "../../../../shared/utils/v2.ts";
 import type { Game } from "../../game/game.ts";
 import { normalizeSeed } from "../createScenarioGame.ts";
+import { seededRand } from "../seededRand.ts";
 import {
     buildDuo2v2Scenario,
     type CpcAgentId,
@@ -71,23 +71,10 @@ const centerKit: KitItem[] = [
 const kitOffsetFromSpawn = 10;
 const kitScatter = 4;
 // random layout: distance from the center to a duo's midpoint, and the teammate spacing along the perpendicular
+// (seededRand streams: 0 = loot scatter, 7919 = spawn geometry; the objective uses 104729)
 const spawnRadiusMin = 24;
 const spawnRadiusMax = 44;
 const teammateHalfSpacing = 6.4;
-
-/**
- * Park-Miller's first outputs are almost linear in the seed (seeds 1 apart differ by 1e-5), and string
- * seeds like "run-0" / "run-1" hash to neighbouring integers, so the seed is mixed first (two xorshift-
- * multiply rounds); `stream` separates the loot scatter from the spawn geometry.
- */
-function seededRand(seed: number, stream = 0) {
-    let x = (seed + stream) >>> 0;
-    x = Math.imul(x ^ (x >>> 16), 0x45d9f3b) >>> 0;
-    x = Math.imul(x ^ (x >>> 16), 0x45d9f3b) >>> 0;
-    x ^= x >>> 16;
-    // Park-Miller needs a seed in [1, 2^31 - 2]
-    return util.seededRand(((x >>> 0) % 2147483646) + 1);
-}
 
 /** Seeded spawn geometry (see `FieldLayout`). `fixed` reproduces the base scenario exactly. */
 export function createFieldSpawns(region: ScenarioRegion, seed: number, layout: FieldLayout): FieldSpawnLayout {

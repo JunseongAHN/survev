@@ -66,6 +66,8 @@ export interface AgentObservation {
     gas: { mode: number; rad: number; pos: Vec2; rad_new: number; pos_new: Vec2 };
     alive_count: number;
     alive_teams: number;
+    /** shared objective point (race mode), shown to every agent like a HUD marker; null when there is none */
+    objective: { index: number; pos: Vec2; radius: number; dist: number } | null;
 }
 
 /** Allowlist of every key an observation may contain, checked by tests so nothing leaks past the schema. */
@@ -81,6 +83,7 @@ export const observationAllowlist = {
         "gas",
         "alive_count",
         "alive_teams",
+        "objective",
     ],
     self: [
         "id",
@@ -110,6 +113,7 @@ export const observationAllowlist = {
     bullets: ["pos", "dir", "player_id"],
     dead_bodies: ["pos", "dist"],
     gas: ["mode", "rad", "pos", "rad_new", "pos_new"],
+    objective: ["index", "pos", "radius", "dist"],
     vec2: ["x", "y"],
 } as const;
 
@@ -130,7 +134,12 @@ function vec(v: Vec2): Vec2 {
  * observation keeps only objects inside the rectangle itself, i.e. what the client actually draws.
  * Teammates come from group status (always known); enemy HP is never included.
  */
-export function extractAgentObservation(game: Game, player: Player, ids: ObservationIds): AgentObservation {
+export function extractAgentObservation(
+    game: Game,
+    player: Player,
+    ids: ObservationIds,
+    objective: AgentObservation["objective"] = null,
+): AgentObservation {
     const halfWidth = player.zoom + 4;
     const halfHeight = halfWidth / (16 / 9);
     const inView = (pos: Vec2) =>
@@ -254,5 +263,6 @@ export function extractAgentObservation(game: Game, player: Player, ids: Observa
         },
         alive_count: game.aliveCount,
         alive_teams: game.playerBarn.groups.filter((g) => g.livingPlayers.length > 0).length,
+        objective,
     };
 }
