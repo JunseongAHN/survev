@@ -5,6 +5,7 @@ import { seededRand } from "../seededRand.ts";
 import {
     buildDuo2v2Scenario,
     type CpcAgentId,
+    type CpcTeamId,
     type Duo2v2Scenario,
     type Duo2v2ScenarioOptions,
     type ScenarioRegion,
@@ -38,7 +39,18 @@ export interface FieldSpawnLayout {
 
 export interface Duo2v2FieldOptions extends Omit<Duo2v2ScenarioOptions, "spawns"> {
     layout?: FieldLayout;
+    /**
+     * Body skins per team so a spectator can tell the duos apart, the way 50v50 colours its factions
+     * (`GameConfig.teamColors`): default team-a = "outfitBlueLeader" (blue), team-b = "outfitRed" (red).
+     * `false` keeps the engine default skin. Purely visual: outfits are not part of the observation.
+     */
+    teamOutfits?: Partial<Record<CpcTeamId, string>> | false;
 }
+
+export const defaultTeamOutfits: Record<CpcTeamId, string> = {
+    "team-a": "outfitBlueLeader",
+    "team-b": "outfitRed",
+};
 
 export interface Duo2v2FieldScenario extends Duo2v2Scenario {
     loot: FieldLoot[];
@@ -174,10 +186,13 @@ export function buildDuo2v2FieldScenario(
         mapSize: options.mapSize,
         spawns: layout === "fixed" ? undefined : spawnLayout.spawns,
     });
+    const outfits = options.teamOutfits === false ? {} : { ...defaultTeamOutfits, ...options.teamOutfits };
     for (const entry of scenario.players) {
         const dir = spawnLayout.facing[entry.agentId];
         v2.set(entry.player.dir, dir);
         v2.set(entry.player.dirOld, dir);
+        const outfit = outfits[entry.teamId];
+        if (outfit) entry.player.setOutfit(outfit);
     }
 
     const loot = createFieldLoot(scenario.scenarioRegion, seed, spawnLayout);

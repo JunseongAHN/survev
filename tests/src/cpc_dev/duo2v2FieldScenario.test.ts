@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import { createScenarioGame } from "../../../server/src/cpc_dev/createScenarioGame.ts";
 import {
     buildDuo2v2FieldScenario,
+    defaultTeamOutfits,
     type FieldLayout,
     mirrorAcrossCenter,
 } from "../../../server/src/cpc_dev/scenarios/duo2v2Field.ts";
@@ -122,4 +123,14 @@ test("random layouts differ across seeds in angle and distance", () => {
     }
     expect(angles.size).toBeGreaterThanOrEqual(6);
     expect(radii.size).toBeGreaterThanOrEqual(6);
+});
+
+test("teams wear distinct body skins by default (blue vs red), optional", () => {
+    const { scenario } = buildField("cpc-field-seed-0");
+    for (const p of scenario.players) expect(p.player.outfit).toBe(defaultTeamOutfits[p.teamId]);
+    expect(defaultTeamOutfits["team-a"]).not.toBe(defaultTeamOutfits["team-b"]);
+
+    const { game, mapSize } = createScenarioGame({ seed: "cpc-field-seed-0" });
+    const plain = buildDuo2v2FieldScenario(game, { seed: "cpc-field-seed-0", mapSize, teamOutfits: false });
+    for (const p of plain.players) expect(p.player.outfit).toBe("outfitBase");
 });

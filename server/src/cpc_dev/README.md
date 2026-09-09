@@ -74,6 +74,8 @@ const taps = attachEventTaps(players, () => tick / Config.gameTps);
 taps.events; // [{ type: "fire", t, playerId, weapon, pos, dir }, { type: "damage", t, playerId, sourceId, amount, hpAfter, ... }, ...]
 ```
 
+Teams wear distinct body skins by default so a spectator (or a rendered frame) can tell the duos apart: team-a `outfitBlueLeader` (blue), team-b `outfitRed` (red) — the 50v50 faction skins, used as plain outfits because `test_normal` is not a faction map (the client's faction patch / `GameConfig.teamColors` only render in faction mode). `teamOutfits: false` keeps the engine default; outfits are visual only and never enter the observation.
+
 ## Race objective (`objective.ts`)
 
 `{ objective: { mode: "race" }, endOnElimination: false }` on the episode turns on a shared capture point: one seeded point at a time (`RaceObjective`, seed stream 104729), visible to every agent as `obs.objective`, captured by the first standing player within 4 u (a `capture` event credited to that player's team), then moved 30–70 u away. Points keep coming until the time limit, and with `endOnElimination: false` a team that wipes the other keeps collecting them — which is the intended reason to fight, instead of an explicit death penalty. `info.objective` carries the point and the captures per team; metrics gain `captures` / `team_captures`; the winner is the team with more captures. `liveHook` can reuse the same class for rendered games.

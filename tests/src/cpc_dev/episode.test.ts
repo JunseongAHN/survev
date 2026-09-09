@@ -22,9 +22,16 @@ function expectAllowlisted(value: unknown, path: string) {
     }
 }
 
+const collectedEvents: ObsMessage["events"] = [];
+
 function runUntilDone(episode: CpcEpisode, actions: Record<string, object>, maxSeconds: number): ObsMessage {
+    collectedEvents.length = 0;
     let msg = episode.step(actions as never, 10);
-    while (!msg.done && msg.t < maxSeconds) msg = episode.step({}, 10);
+    collectedEvents.push(...msg.events);
+    while (!msg.done && msg.t < maxSeconds) {
+        msg = episode.step({}, 10);
+        collectedEvents.push(...msg.events);
+    }
     return msg;
 }
 
@@ -145,10 +152,13 @@ test("scripted chasers eliminate idle controlled agents and the episode reports 
     expect(metrics["team-a-0"].hp_end).toBe(0);
     expect(metrics["team-a-0"].damage_taken).toBeGreaterThan(0);
     expect(metrics["team-b-0"].shots + metrics["team-b-1"].shots).toBeGreaterThan(0);
-    expect(metrics["team-b-0"].damage_dealt + metrics["team-b-1"].damage_dealt).toBeCloseTo(
-        metrics["team-a-0"].damage_taken + metrics["team-a-1"].damage_taken,
-        5,
-    );
+    // dealt counts hits by team-b on team-a; taken also includes bleed while downed (source null)
+    const damage = collectedEvents.filter((e) => e.type === "damage" && e.agent.startsWith("team-a"));
+    const byTeamB = damage.filter((e) => e.source?.startsWith("team-b")).reduce((sum, e) => sum + e.amount!, 0);
+    const allTaken = damage.reduce((sum, e) => sum + e.amount!, 0);
+    expect(metrics["team-b-0"].damage_dealt + metrics["team-b-1"].damage_dealt).toBeCloseTo(byTeamB, 5);
+    expect(metrics["team-a-0"].damage_taken + metrics["team-a-1"].damage_taken).toBeCloseTo(allTaken, 5);
+    expect(allTaken).toBeGreaterThanOrEqual(byTeamB);
     expect(metrics["team-b-0"].partner_survival_time).toBe(metrics["team-b-1"].survival_time);
 
     expect(() => episode.step({}, 10)).toThrow(/done/);
