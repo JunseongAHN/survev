@@ -211,7 +211,12 @@ export class CpcEpisode {
         const scripted = this.players.filter((p) => !this.options.controlled.includes(this.agentIdOf.get(p.__id)!));
         for (let i = 0; i < ticks; i++) {
             if (this.tick % scriptedDecisionTicks === 0) {
-                const ctx: ScriptedContext = { game: this.game, players: this.players, t: this.t };
+                const ctx: ScriptedContext = {
+                    game: this.game,
+                    players: this.players,
+                    t: this.t,
+                    objective: this.objective ? { pos: this.objective.current.pos, radius: this.objective.radius } : undefined,
+                };
                 for (const bot of scripted) applyCpcAction(bot, scriptedAction(this.options.scripted, ctx, bot));
             }
             this.game.update(1 / tps);

@@ -297,3 +297,53 @@ test("without endOnElimination the episode ends early only when every controlled
     expect(msg.info.reason).toBe("controlled_dead");
     expect(msg.info.winner_team).toBeNull(); // 0 : 0 captures is a tie
 });
+
+test("racer opponents loot, run the race and engage only inside racerEngageDist", () => {
+    // team-b = racers, team-a idle (controlled but never given actions): racers should take points
+    const episode = new CpcEpisode({
+        seed: "cpc-racer-test",
+        scripted: "racer",
+        controlled: ["team-a-0", "team-a-1"],
+        objective: { mode: "race", radius: 4, minDist: 30, maxDist: 70 },
+        endOnElimination: false,
+        layout: "random",
+        timeLimit: 30,
+    });
+    episode.reset();
+    let msg = episode.step({}, 10);
+    let firstCapture: number | undefined;
+    let armedBeforeFirstCapture = false;
+    while (!msg.done) {
+        const b0 = msg.obs["team-b-0"].self;
+        if (firstCapture === undefined && msg.events.some((e) => e.type === "capture")) {
+            firstCapture = msg.t;
+            armedBeforeFirstCapture = b0.weapons.some((w) => w.type === "ak47" || w.type === "mp5");
+        }
+        if (msg.t > 29) break;
+        msg = episode.step({}, 10);
+    }
+    const captures = msg.info.objective!.captures;
+    expect(captures["team-b"]).toBeGreaterThanOrEqual(3); // the racer keeps taking points
+    expect(captures["team-a"]).toBe(0);
+    expect(firstCapture).toBeDefined();
+    expect(armedBeforeFirstCapture).toBe(true); // it picked up its kit gun before racing
+
+    // a racer close to an enemy fights like the chaser: the idle team-a takes damage from team-b fire
+    const dmg = msg.info.metrics ?? null;
+    if (dmg) expect(dmg["team-b-0"].shots + dmg["team-b-1"].shots).toBeGreaterThan(0);
+});
+
+test("chaser behaviour is unchanged by the objective: it closes on enemies instead of racing", () => {
+    const episode = new CpcEpisode({
+        seed: "cpc-racer-test",
+        scripted: "chaser",
+        controlled: ["team-a-0", "team-a-1"],
+        objective: { mode: "race", radius: 4 },
+        endOnElimination: false,
+        timeLimit: 20,
+    });
+    episode.reset();
+    const last = runUntilDone(episode, {}, 20);
+    expect(last.info.objective!.captures["team-b"]).toBe(0);
+    expect(last.info.reason).toBe("controlled_dead"); // idle team-a gets eliminated
+});

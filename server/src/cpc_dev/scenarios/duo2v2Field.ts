@@ -186,7 +186,9 @@ export function buildDuo2v2FieldScenario(
         mapSize: options.mapSize,
         spawns: layout === "fixed" ? undefined : spawnLayout.spawns,
     });
-    const outfits = options.teamOutfits === false ? {} : { ...defaultTeamOutfits, ...options.teamOutfits };
+    const outfits: Partial<Record<CpcTeamId, string>> = options.teamOutfits === false
+        ? {}
+        : { ...defaultTeamOutfits, ...options.teamOutfits };
     for (const entry of scenario.players) {
         const dir = spawnLayout.facing[entry.agentId];
         v2.set(entry.player.dir, dir);
