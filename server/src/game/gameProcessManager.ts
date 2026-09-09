@@ -1,5 +1,6 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type { WebSocket } from "uWebSockets.js";
 import { type MapDef, type MapDefKey, MapDefs } from "../../../shared/defs/mapDefs.ts";
 import type { TeamMode } from "../../../shared/gameConfig.ts";
@@ -11,9 +12,9 @@ import { type GameData, type ProcessMsg, ProcessMsgType } from "./ipcTypes.ts";
 
 let procFile: string;
 if (process.env.NODE_ENV === "production") {
-    procFile = "dist/gameProcess.js";
+    procFile = path.join(import.meta.dirname, "gameProcess.js");
 } else {
-    procFile = "src/game/gameProcess.ts";
+    procFile = path.join(import.meta.dirname, "gameProcess.ts");
 }
 
 enum ProcState {
@@ -21,6 +22,9 @@ enum ProcState {
     CreatingGame,
     Running,
 }
+
+const processMessageTimeout = 10000;
+const processStartupTimeout = 120000;
 
 class GameProcess {
     process: ChildProcess;
@@ -195,11 +199,17 @@ export class GameProcessManager {
                     type: ProcessMsgType.KeepAlive,
                 });
 
-                if (Date.now() - gameProc.lastMsgTime > 10000) {
+                const timeout = gameProc.state === ProcState.CreatingGame
+                    ? processStartupTimeout
+                    : processMessageTimeout;
+
+                if (Date.now() - gameProc.lastMsgTime > timeout) {
                     this.logger.warn(
                         `Process ${gameProc.process.pid} - #${
                             gameProc.gameData.id.substring(0, 4)
-                        } did not send a message in more 10 seconds, killing`,
+                        } did not send a message in more ${
+                            timeout / 1000
+                        } seconds, killing`,
                     );
                     // sigquit can dump a core of the process
                     // useful for debugging infinite loops

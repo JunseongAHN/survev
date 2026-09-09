@@ -18,6 +18,7 @@ lost_game_data/
 
 # Compiled source
 dist/
+.tmp/
 
 # Node modules
 node_modules/

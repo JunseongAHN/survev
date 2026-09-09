@@ -45,7 +45,7 @@ export function getConfig(isProduction: boolean, dir: string) {
             errorLogs: true,
         },
         database: {
-            enabled: true,
+            enabled: false,
             host: "127.0.0.1",
             user: "survev",
             password: "survev",
@@ -66,7 +66,7 @@ export function getConfig(isProduction: boolean, dir: string) {
             spawnMode: "default",
             allowBots: isDev,
             allowEditMsg: isDev,
-            allowMockAccount: isDev,
+            allowMockAccount: false,
         },
         defaultItems: {},
     };
@@ -108,7 +108,11 @@ export function getConfig(isProduction: boolean, dir: string) {
 
     if (!config.gameServer.apiServerUrl) {
         // same as above, provide a more accurate default value if not set manually
-        config.gameServer.apiServerUrl = `http://${config.apiServer.host}:${config.apiServer.port}`;
+        const apiServerHost =
+            config.apiServer.host === "0.0.0.0"
+                ? "127.0.0.1"
+                : config.apiServer.host;
+        config.gameServer.apiServerUrl = `http://${apiServerHost}:${config.apiServer.port}`;
     }
 
     const googleLogin = !!(

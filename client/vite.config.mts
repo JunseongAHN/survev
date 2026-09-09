@@ -13,6 +13,9 @@ export default defineConfig(({ mode }) => {
     const isDev = mode === "development";
 
     const Config = getConfig(!isDev, "");
+    const apiServerProxyHost = Config.apiServer.host === "0.0.0.0"
+        ? "127.0.0.1"
+        : Config.apiServer.host;
 
     process.env.VITE_TURNSTILE_SCRIPT = "";
     if (Config.secrets.TURNSTILE_SITE_KEY) {
@@ -54,12 +57,12 @@ export default defineConfig(({ mode }) => {
                 secure: false,
             },
             "/api": {
-                target: `http://${Config.apiServer.host}:${Config.apiServer.port}`,
+                target: `http://${apiServerProxyHost}:${Config.apiServer.port}`,
                 changeOrigin: true,
                 secure: false,
             },
             "/team_v2": {
-                target: `http://${Config.apiServer.host}:${Config.apiServer.port}`,
+                target: `http://${apiServerProxyHost}:${Config.apiServer.port}`,
                 changeOrigin: true,
                 secure: false,
                 ws: true,
