@@ -80,6 +80,10 @@ Teams wear distinct body skins by default so a spectator (or a rendered frame) c
 
 `{ objective: { mode: "race" }, endOnElimination: false }` on the episode turns on a shared capture point: one seeded point at a time (`RaceObjective`, seed stream 104729), visible to every agent as `obs.objective`, captured by the first standing player within 4 u (a `capture` event credited to that player's team), then moved 30–70 u away. Points keep coming until the time limit, and with `endOnElimination: false` a team that wipes the other keeps collecting them — which is the intended reason to fight, instead of an explicit death penalty. `info.objective` carries the point and the captures per team; metrics gain `captures` / `team_captures`; the winner is the team with more captures. `liveHook` can reuse the same class for rendered games.
 
+## Scripted opponents (`scriptedPolicy.ts`)
+
+`chaser` (default) loots the nearest gun, approaches the nearest enemy to 22 u, strafes between 10 and 22 u, holds fire inside 30 u and revives a downed teammate when no enemy is within 25 u. `racer` shares the loot and combat phases but engages only inside `racerEngageDist` (25 u) and otherwise runs to the shared race point (`ctx.objective`), so it competes for captures; without an objective it behaves like the chaser. Both read game state directly (omniscient) and are benchmark opponents, not human-likeness references. `idle` does nothing.
+
 ## PR-S4: agent observation
 
 `observation.ts` builds what an agent's client would know: `player.visibleObjects` (the set the server streams, refreshed by `netSync()`) cut to the view rectangle (`zoom + 4` half-width, 16:9), split into visible players / loot / obstacles / dead bodies, plus bullets inside the same rectangle, teammates from group status, own state, gas and alive counts. Enemy HP is never included and `observationAllowlist` is enforced by a test, so nothing outside the schema can leak in.
