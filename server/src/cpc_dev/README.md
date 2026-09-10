@@ -37,8 +37,8 @@ Intentional limitations:
 - CPC ids are stable scenario ids: `team-a-0`, `team-a-1`, `team-b-0`, `team-b-1`.
 - Native player, group, and team ids are preserved under `agents[agent_id].native`.
 - Duo teammate semantics are mapped to native groups. For duo maps, native `teamId` currently mirrors `groupId`.
-- Seed support uses the existing map regeneration path and fixed scenario-region-relative player positions, but the full engine is not deterministic because other systems may still use `Math.random()` / unseeded randomness.
-- `events` is always an empty array. No fire, damage, death, LOS, or CPC metric hooks are included in PR-S1.
+- Seed support uses the existing map regeneration path and fixed scenario-region-relative player positions. The full engine is **not** deterministic; what a seed does and does not fix is listed under "Reproducibility (M9)" below.
+- PR-S1 emitted no events. Since PR-S5 the episode reports fire / damage / down / kill / loot / heal / revive (see "event taps").
 
 ## PR-S2: field scenario
 
@@ -64,7 +64,39 @@ stepGame(game, 100); // one game second
 
 Tests: `tests/src/cpc_dev/applyCpcAction.test.ts` covers movement speed and quantization, single/auto fire counts, loot pickup, healing and reviving; `duo2v2FieldScenario.test.ts` covers loot determinism, mirroring and spawning.
 
-## PR-S5 (partial): event taps
+## Reproducibility (M9)
+
+Phase 0 asks for the *boundary*, not full determinism: the engine is upstream code and patching
+every `Math.random()` is out of scope (the action plan says so explicitly, and falls back to
+statistical evaluation over several episodes per seed). `determinism.test.ts` pins the boundary
+from both sides, and the honest summary is: **the world is seeded, the shooting is not.**
+
+Fixed by the scenario seed:
+
+| what | how |
+|---|---|
+| map seed, rivers and lakes | `createScenarioGame` -> `map.regenerate(normalizeSeed(seed))`; `map.init` runs river/lake generation off `util.seededRand(this.seed)` |
+| loot layout (team kits + the contested center kit) | `duo2v2Field.ts`, `seededRand(seed, 0)` |
+| spawn geometry, including `layout: "random"`'s rotation and distance | `duo2v2Field.ts`, `seededRand(seed, 7919)` |
+| race objective point positions | `objective.ts`, `seededRand(seed, 104729)` |
+| the scripted opponents' aim noise | `episode.ts`, `seededRand(seed, 15485863)` |
+
+Not fixed, ordered by how much it moves the metrics:
+
+| source | what it perturbs |
+|---|---|
+| `weaponManager.ts` bullet direction: `util.random(-0.5, 0.5) * spread` | **every shot.** ak47 `shotSpread` 2.5 deg (+7.5 while moving), mp5 3 (+4) — so hit rate, `damage_dealt`, `hits_given` and `kills` all vary run to run |
+| `player.ts` `Math.random() < GameConfig.player.headshotChance` (0.15) | damage per hit, hence time-to-kill |
+| `util.random` / `util.randomInt` / `v2.randomUnit` / `util.randomPointInCircle` at ~90 call sites in `server/src/game` | loot scatter and push velocity on drops and refused pickups (so *where* loot ends up), throwable and explosion geometry, decal placement |
+| `map.ts` object placement (`Math.random` at 5 sites, and the `randomGenerator` default of `util.random`) | terrain layout — moot on `test_normal`, which is an empty field, but it means a scenario with obstacles would not be seed-stable |
+| netSync timing and float accumulation over `game.update(1/100)` | positions drift by fractions of a unit between otherwise identical runs |
+
+Consequences for reading results: compare **means over several episodes**, never single runs; a
+seed reproduces the *situation* (map, loot, spawns, opponent aim noise) but not the *exchange*.
+`layout: "random"` is the training default precisely so absolute directions carry no information
+across episodes.
+
+## PR-S5: event taps
 
 `eventTaps.ts` records `fire` / `damage` / `down` / `kill` events for a set of players by wrapping `WeaponManager.fireWeapon()`, `Player.damage()`, `Player.down()` and `Player.kill()` on those instances (`detach()` restores them). A fire event is only recorded when a bullet actually left the gun (clip ammo decreased); a damage event carries `amount` (HP removed after armor), `hpBefore/hpAfter`, the source player id and weapon, and is kept ahead of the down/kill event emitted inside `damage()`.
 
