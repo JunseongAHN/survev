@@ -9,11 +9,11 @@
  */
 
 import { expect, test } from "vitest";
+import { Config } from "../../../server/src/config.ts";
 import { applyCpcAction } from "../../../server/src/cpc_dev/applyCpcAction.ts";
 import { createScenarioGame, normalizeSeed } from "../../../server/src/cpc_dev/createScenarioGame.ts";
 import { buildDuo2v2FieldScenario, type FieldLayout } from "../../../server/src/cpc_dev/scenarios/duo2v2Field.ts";
 import { stepGame } from "../../../server/src/cpc_dev/stepGame.ts";
-import { Config } from "../../../server/src/config.ts";
 import { GameConfig } from "../../../shared/gameConfig.ts";
 import { v2 } from "../../../shared/utils/v2.ts";
 

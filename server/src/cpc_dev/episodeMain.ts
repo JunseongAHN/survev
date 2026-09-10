@@ -16,8 +16,8 @@ import { Config } from "../config.ts";
 import type { CpcAction } from "./applyCpcAction.ts";
 import { defaultScenarioSeed } from "./createScenarioGame.ts";
 import { CpcEpisode, type ObsMessage } from "./episode.ts";
-import { seededRand } from "./seededRand.ts";
 import type { ScriptedPolicyName } from "./scriptedPolicy.ts";
+import { seededRand } from "./seededRand.ts";
 
 /** Accepts both `--name value` and `--name=value`; the plan's command line uses the first. */
 function readOption(name: string): string | undefined {
@@ -119,13 +119,13 @@ async function main(): Promise<void> {
     const metrics = msg.info.metrics ?? {};
     console.log(
         `CPC episode: ${scenario} policy=${policy} vs ${scripted} seed=${seed} `
-        + `-> ${msg.t.toFixed(1)}s game time in ${wall.toFixed(1)}s wall (${(msg.t / wall).toFixed(0)}x), `
-        + `${lines.length} steps, reason=${msg.info.reason}, winner=${msg.info.winner_team ?? "none"}`,
+            + `-> ${msg.t.toFixed(1)}s game time in ${wall.toFixed(1)}s wall (${(msg.t / wall).toFixed(0)}x), `
+            + `${lines.length} steps, reason=${msg.info.reason}, winner=${msg.info.winner_team ?? "none"}`,
     );
     for (const [agentId, m] of Object.entries(metrics)) {
         console.log(
             `  ${agentId}: survival ${m.survival_time.toFixed(1)}s hp_mean ${m.hp_mean.toFixed(0)} `
-            + `dealt ${m.damage_dealt.toFixed(0)} taken ${m.damage_taken.toFixed(0)} kills ${m.kills}`,
+                + `dealt ${m.damage_dealt.toFixed(0)} taken ${m.damage_taken.toFixed(0)} kills ${m.kills}`,
         );
     }
     console.log(`wrote ${out}`);
