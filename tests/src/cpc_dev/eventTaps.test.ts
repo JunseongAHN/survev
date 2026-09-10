@@ -174,3 +174,46 @@ test("revive events name the revived teammate as the agent and the reviver as th
     expect(revives[0].t).toBeGreaterThan(GameConfig.player.reviveDuration - 0.1);
     expect(teammate.downed).toBe(false);
 });
+
+// M7: one fire event per bullet the engine actually created
+test("fire events match the bullets the engine created", () => {
+    const { game, player } = createDuo();
+    player.weaponManager.setWeapon(GameConfig.WeaponSlot.Primary, "ak47", 30);
+    player.weaponManager.setCurWeapIndex(GameConfig.WeaponSlot.Primary);
+    stepGame(game, ticksPerSecond);
+
+    let created = 0;
+    const fireBullet = game.bulletBarn.fireBullet;
+    game.bulletBarn.fireBullet = (params) => {
+        created++;
+        return fireBullet.call(game.bulletBarn, params);
+    };
+
+    const time = clock(game);
+    const taps = attachEventTaps([player], time.now);
+    applyCpcAction(player, { aim: v2.create(1, 0), fire: { hold: true } });
+    time.advance(2 * ticksPerSecond);
+
+    const fires = taps.events.filter((e) => e.type === "fire");
+    expect(fires.length).toBeGreaterThan(5);
+    // ak47 has bulletCount 1, so a shot is a bullet
+    expect(created).toBe(fires.length);
+    game.bulletBarn.fireBullet = fireBullet;
+});
+
+// M7: the engine's damage type reaches the observer, so gas and bleed are not mistaken for a shot
+test("damage events keep the engine's damage type", () => {
+    const { game, player, teammate } = createDuo();
+    const time = clock(game);
+    const taps = attachEventTaps([player, teammate], time.now);
+
+    player.damage({ amount: 10, damageType: GameConfig.DamageType.Gas, dir: v2.create(1, 0) });
+    teammate.damage({ amount: 10, damageType: GameConfig.DamageType.Player, dir: v2.create(1, 0), source: player });
+
+    const damages = taps.events.filter((e): e is DamageEvent => e.type === "damage");
+    expect(damages).toHaveLength(2);
+    expect(damages[0].damageType).toBe(GameConfig.DamageType.Gas);
+    expect(damages[0].sourceId).toBeNull();
+    expect(damages[1].damageType).toBe(GameConfig.DamageType.Player);
+    expect(damages[1].sourceId).toBe(player.__id);
+});

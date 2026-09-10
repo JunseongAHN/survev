@@ -1,4 +1,4 @@
-import { GameConfig } from "../../../shared/gameConfig.ts";
+import { DamageType, GameConfig } from "../../../shared/gameConfig.ts";
 import { Config } from "../config.ts";
 import type { Player } from "../game/objects/player.ts";
 import { applyCpcAction, type CpcAction } from "./applyCpcAction.ts";
@@ -51,6 +51,8 @@ export interface BridgeEvent {
     time_to_capture?: number;
     source?: string | null;
     weapon?: string | null;
+    /** damage: what dealt it — "player" | "bleeding" | "gas" | "airdrop" | "airstrike" */
+    damage_type?: string;
     amount?: number;
     hp_before?: number;
     hp_after?: number;
@@ -368,6 +370,7 @@ export class CpcEpisode {
                         agent,
                         source,
                         weapon: e.weapon,
+                        damage_type: DamageType[e.damageType].toLowerCase(),
                         amount: e.amount,
                         hp_before: e.hpBefore,
                         hp_after: e.hpAfter,
