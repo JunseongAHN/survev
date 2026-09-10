@@ -110,6 +110,29 @@ taps.events; // [{ type: "fire", t, playerId, weapon, pos, dir }, { type: "damag
 
 Teams wear distinct body skins by default so a spectator (or a rendered frame) can tell the duos apart: team-a `outfitBlueLeader` (blue), team-b `outfitRed` (red) — the 50v50 faction skins, used as plain outfits because `test_normal` is not a faction map (the client's faction patch / `GameConfig.teamColors` only render in faction mode). `teamOutfits: false` keeps the engine default; outfits are visual only and never enter the observation.
 
+## System 1 skills (`skills.ts`)
+
+The seven skills a controlled agent can be given instead of raw inputs: `move_to`, `follow`,
+`loot`, `heal`, `engage`, `retreat`, `revive`. `runSkill` turns one `{skill, params}` into a
+`CpcAction` every tick and returns `{action, done, failed?}`, which is what lets System 2 commit to
+an intent and be re-called only when it completes or breaks. `hold` / `peek` / `rotate_zone` /
+`idle_look` arrive with cover and the gas schedule; `take_cover` needs obstacles, and the open field
+has none.
+
+`scriptedPolicy.ts` is a *selector* over these — a hand-written priority order (loot first, then
+revive a downed teammate if it is safe, engage inside `engageDist`, else run the race, else chase),
+which is exactly the job the planner takes over, and the order it has to beat. The skill bodies are
+the opponents' old phases extracted unchanged, so the behaviour tests in `episode.test.ts` are the
+regression test for that refactor and the PPO baselines stay comparable.
+
+`SkillOptions` holds the motor constraints per agent — `aimNoiseDeg`, `reactionDelay`,
+`pathJitterDeg`. The opponents get theirs from `scriptedOptions` (a strength axis), the controlled
+agents from the episode's `humanization` option (a human-likeness axis). Same three dials, opposite
+purposes: a benchmark opponent wants zero, a teammate meant to pass for a person does not.
+
+Over the wire the episode resolves agent ids to players and reports every committed skill in
+`info.skills`; the protocol is in `docs/survev-bridge-v0.md`.
+
 ## Race objective (`objective.ts`)
 
 `{ objective: { mode: "race" }, endOnElimination: false }` on the episode turns on a shared capture point: one seeded point at a time (`RaceObjective`, seed stream 104729), visible to every agent as `obs.objective`, captured by the first standing player within 4 u (a `capture` event credited to that player's team), then moved 30–70 u away. Points keep coming until the time limit, and with `endOnElimination: false` a team that wipes the other keeps collecting them — which is the intended reason to fight, instead of an explicit death penalty. `info.objective` carries the point and the captures per team; metrics gain `captures` / `team_captures`; the winner is the team with more captures. `liveHook` can reuse the same class for rendered games.

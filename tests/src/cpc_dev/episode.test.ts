@@ -53,7 +53,15 @@ test("reset returns a full, allowlisted observation for every agent", () => {
         "team-b-0": "team-b",
         "team-b-1": "team-b",
     });
-    expect(msg.info).toEqual({ alive_teams: 2, winner_team: null, reason: null, metrics: null, objective: null });
+    // `skills` is null until a controlled agent is given one (System 1's interrupt channel)
+    expect(msg.info).toEqual({
+        alive_teams: 2,
+        winner_team: null,
+        reason: null,
+        metrics: null,
+        objective: null,
+        skills: null,
+    });
     expect(msg.obs["team-a-0"].objective).toBeNull();
 
     for (const id of agentIds) {
@@ -458,5 +466,69 @@ test("shots_heard reaches only agents within the audible radius, never the shoot
     const quiet = episode.step({ "team-a-0": {} }, 50);
     expect(quiet.events.filter((e) => e.type === "fire")).toHaveLength(0);
     expect(quiet.obs["team-a-1"].shots_heard).toHaveLength(0);
+    episode.close();
+});
+
+// System 1 over the wire: the planner sends `{skill, params}` and the episode executes it every tick
+test("controlled agents can be driven by skills, held across steps, with status reported back", () => {
+    const episode = new CpcEpisode({
+        seed: "cpc-skill-test",
+        scripted: "idle",
+        controlled: ["team-a-0", "team-a-1"],
+        timeLimit: 30,
+    });
+    const first = episode.reset();
+    expect(first.info.skills).toBeNull();
+
+    // team-a-0 walks to a point 12 u north of where it stands; team-a-1 follows it
+    const start = first.obs["team-a-0"].self.pos;
+    const goal = { x: start.x, y: start.y + 12 };
+    let msg = episode.step({
+        "team-a-0": { skill: "move_to", params: { pos: goal } },
+        "team-a-1": { skill: "follow", params: { target: "team-a-0", distance: 4 } },
+    }, 10);
+
+    expect(msg.info.skills).toEqual({
+        "team-a-0": { skill: "move_to", done: false },
+        "team-a-1": { skill: "follow", done: false },
+    });
+    expect(v2.distance(msg.obs["team-a-0"].self.pos, goal)).toBeLessThan(v2.distance(start, goal));
+
+    // the commit holds: further steps need no actions at all and the skills keep running
+    while (!msg.done && !msg.info.skills!["team-a-0"].done && msg.t < 5) {
+        msg = episode.step({}, 10);
+    }
+    expect(msg.info.skills!["team-a-0"].done).toBe(true);
+    expect(v2.distance(msg.obs["team-a-0"].self.pos, goal)).toBeLessThanOrEqual(2);
+    // and the follower closed on its partner while that happened
+    expect(msg.obs["team-a-1"].teammates[0].dist).toBeLessThan(v2.distance(start, goal));
+
+    // a failing skill says so instead of throwing
+    const failing = episode.step({ "team-a-0": { skill: "heal", params: {} } }, 10);
+    expect(failing.info.skills!["team-a-0"]).toEqual({
+        skill: "heal",
+        done: true,
+        failed: "no healing item",
+    });
+
+    // raw inputs replace the commitment
+    const raw = episode.step({ "team-a-0": { move: { x: 1, y: 0 } } }, 10);
+    expect(raw.info.skills).toEqual({ "team-a-1": { skill: "follow", done: false } });
+    episode.close();
+});
+
+test("bad skill requests are rejected with the field that was wrong", () => {
+    const episode = new CpcEpisode({ seed: "cpc-skill-test", scripted: "idle", controlled: ["team-a-0"] });
+    episode.reset();
+    const send = (action: object) => () => episode.step({ "team-a-0": action as never }, 1);
+
+    expect(send({ skill: "nope" })).toThrow(/unknown skill/);
+    expect(send({ skill: "move_to", params: {} })).toThrow(/move_to.params.pos must be \{x, y\}/);
+    expect(send({ skill: "follow", params: {} })).toThrow(/needs params.target/);
+    expect(send({ skill: "follow", params: { target: "team-z-9" } })).toThrow(/unknown agent/);
+    expect(send({ skill: "engage", params: { target: "team-b-0", style: "sprint" } }))
+        .toThrow(/style must be push \| hold_angle \| trade/);
+    expect(send({ skill: "move_to", params: { pos: { x: 1, y: 2 }, arrive: "soon" } }))
+        .toThrow(/arrive must be a finite number/);
     episode.close();
 });

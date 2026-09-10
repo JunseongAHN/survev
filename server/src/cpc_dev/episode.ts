@@ -1,4 +1,5 @@
 import { DamageType, GameConfig } from "../../../shared/gameConfig.ts";
+import { v2, type Vec2 } from "../../../shared/utils/v2.ts";
 import { Config } from "../config.ts";
 import type { Player } from "../game/objects/player.ts";
 import { applyCpcAction, type CpcAction } from "./applyCpcAction.ts";
@@ -13,7 +14,20 @@ import {
     type ShotHeard,
 } from "./observation.ts";
 import { buildDuo2v2FieldScenario, type Duo2v2FieldScenario, type FieldLayout } from "./scenarios/duo2v2Field.ts";
-import { type ScriptedContext, type ScriptedOptions, scriptedAction, type ScriptedPolicyName } from "./scriptedPolicy.ts";
+import {
+    type ScriptedContext,
+    type ScriptedOptions,
+    scriptedAction,
+    type ScriptedPolicyName,
+    type SkillChoice,
+} from "./scriptedPolicy.ts";
+import {
+    runSkill,
+    type SkillContext,
+    type SkillName,
+    type SkillOptions,
+    type SkillStatus,
+} from "./skills.ts";
 import { seededRand } from "./seededRand.ts";
 
 export interface EpisodeOptions {
@@ -27,6 +41,8 @@ export interface EpisodeOptions {
     scripted?: ScriptedPolicyName;
     /** strength knobs of the scripted opponents (aim noise, reaction delay, racer engage distance); default exact */
     scriptedOptions?: ScriptedOptions;
+    /** motor constraints for the controlled agents' skills (aim noise, reaction delay, path jitter) */
+    humanization?: SkillOptions;
     /** "armed" starts everyone with a loaded ak47 and reserve ammo (curriculum helper); default "fists" */
     loadout?: "fists" | "armed";
     /** "random" rotates the spawn axis and draws the spawn distance per seed (see `FieldLayout`); default "fixed" */
@@ -40,6 +56,19 @@ export interface EpisodeOptions {
      */
     endOnElimination?: boolean;
 }
+
+/**
+ * Wire form of a System 1 skill request. Params name agents by agent id and points by `{x, y}`;
+ * `episode` resolves them, because it owns the id map. Held like a primitive action: the skill runs
+ * every tick until another action replaces it, which is the commit half of the planner's loop.
+ */
+export interface SkillRequest {
+    skill: SkillName;
+    params?: Record<string, unknown>;
+}
+
+/** What a controlled agent may be sent: raw inputs, or a skill for System 1 to execute. */
+export type ControlledAction = CpcAction | SkillRequest;
 
 export interface BridgeEvent {
     type: CpcEvent["type"] | "capture";
@@ -93,6 +122,12 @@ export interface EpisodeInfo {
     metrics: Record<string, AgentMetrics> | null;
     /** race objective: the current point and the captures per team so far */
     objective: { index: number; pos: { x: number; y: number }; radius: number; captures: Record<string, number> } | null;
+    /**
+     * Per controlled agent running a skill: what it is and whether it finished or could not run.
+     * This is the interrupt half of the planner's loop — it is controller state, not world state,
+     * which is why it rides in `info` and not in an agent's observation.
+     */
+    skills: Record<string, { skill: SkillName; done: boolean; failed?: string }> | null;
 }
 
 export interface ObsMessage {
@@ -107,6 +142,34 @@ export interface ObsMessage {
     events: BridgeEvent[];
     info: EpisodeInfo;
 }
+
+/** A controlled action is a skill request when it names one; otherwise it is raw inputs. */
+export function isSkillRequest(action: ControlledAction): action is SkillRequest {
+    return typeof (action as SkillRequest).skill === "string";
+}
+
+function wireVec(value: unknown, where: string): Vec2 {
+    const v = value as { x?: unknown; y?: unknown } | undefined;
+    if (!v || typeof v.x !== "number" || typeof v.y !== "number") {
+        throw new Error(`${where} must be {x, y}, got ${JSON.stringify(value)}`);
+    }
+    return v2.create(v.x, v.y);
+}
+
+function wireNumber(value: unknown, where: string): number | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw new Error(`${where} must be a finite number, got ${JSON.stringify(value)}`);
+    }
+    return value;
+}
+
+function wireString(value: unknown, where: string): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "string") throw new Error(`${where} must be a string, got ${JSON.stringify(value)}`);
+    return value;
+}
+
 
 const tps = Config.gameTps;
 const netSyncEvery = Math.round(Config.gameTps / Config.netSyncTps);
@@ -147,7 +210,17 @@ export class CpcEpisode {
     private pendingCaptures: CaptureEvent[] = [];
     private scriptedRand: () => number = Math.random;
     private contactSince = new Map<number, number>();
-    private info: EpisodeInfo = { alive_teams: 2, winner_team: null, reason: null, metrics: null, objective: null };
+    /** the skill each controlled agent is currently committed to, already resolved to players */
+    private currentSkill = new Map<string, SkillChoice>();
+    private skillStatus = new Map<string, SkillStatus>();
+    private info: EpisodeInfo = {
+        alive_teams: 2,
+        winner_team: null,
+        reason: null,
+        metrics: null,
+        objective: null,
+        skills: null,
+    };
 
     constructor(options: EpisodeOptions = {}) {
         this.options = {
@@ -158,6 +231,7 @@ export class CpcEpisode {
             controlled: options.controlled ?? ["team-a-0", "team-a-1"],
             scripted: options.scripted ?? "chaser",
             scriptedOptions: options.scriptedOptions ?? {},
+            humanization: options.humanization ?? {},
             loadout: options.loadout ?? "fists",
             layout: options.layout ?? "fixed",
             objective: options.objective ?? { mode: "none" },
@@ -200,6 +274,8 @@ export class CpcEpisode {
         const rand = seededRand(normalizeSeed(seed) ?? 0, scriptedSeedStream);
         this.scriptedRand = () => rand();
         this.contactSince = new Map();
+        this.currentSkill = new Map();
+        this.skillStatus = new Map();
         const { mode, ...objectiveOptions } = this.options.objective;
         this.objective = mode === "race"
             ? new RaceObjective(this.scenario.scenarioRegion, normalizeSeed(seed) ?? 0, objectiveOptions, 0)
@@ -210,6 +286,7 @@ export class CpcEpisode {
             reason: null,
             metrics: null,
             objective: this.objectiveInfo(),
+            skills: null,
         };
         if (this.options.loadout === "armed") {
             for (const player of this.players) {
@@ -223,13 +300,21 @@ export class CpcEpisode {
         return this.message([]);
     }
 
-    step(actions: Record<string, CpcAction>, ticks: number): ObsMessage {
+    step(actions: Record<string, ControlledAction>, ticks: number): ObsMessage {
         if (this.done) throw new Error("episode is done, call reset()");
         if (!Number.isInteger(ticks) || ticks < 1) throw new Error(`ticks must be a positive integer, got ${ticks}`);
 
         for (const [agentId, action] of Object.entries(actions)) {
             if (!this.options.controlled.includes(agentId)) throw new Error(`${agentId} is not a controlled agent`);
-            applyCpcAction(this.playerOf(agentId), action);
+            if (isSkillRequest(action)) {
+                this.currentSkill.set(agentId, this.resolveSkill(action));
+                this.skillStatus.delete(agentId);
+            } else {
+                // raw inputs replace whatever skill was committed to
+                this.currentSkill.delete(agentId);
+                this.skillStatus.delete(agentId);
+                applyCpcAction(this.playerOf(agentId), action);
+            }
         }
 
         const scripted = this.players.filter((p) => !this.options.controlled.includes(this.agentIdOf.get(p.__id)!));
@@ -246,6 +331,9 @@ export class CpcEpisode {
                 };
                 for (const bot of scripted) applyCpcAction(bot, scriptedAction(this.options.scripted, ctx, bot));
             }
+            // System 1: a committed skill is re-evaluated every tick, not once per policy step, so
+            // aim tracks a moving target and completion is noticed the tick it happens
+            this.runSkills();
             this.game.update(1 / tps);
             this.tick++;
             if (this.tick % netSyncEvery === 0) this.game.netSync();
@@ -267,6 +355,90 @@ export class CpcEpisode {
     close(): void {
         this.taps?.detach();
         this.game?.stop();
+    }
+
+    /** Runs every committed skill for this tick and records its status for `info.skills`. */
+    private runSkills(): void {
+        if (this.currentSkill.size === 0) return;
+        const ctx: SkillContext = {
+            game: this.game,
+            players: this.players,
+            t: this.t,
+            options: this.options.humanization,
+            rand: this.scriptedRand,
+            contactSince: this.contactSince,
+        };
+        for (const [agentId, choice] of this.currentSkill) {
+            const me = this.playerOf(agentId);
+            const status = runSkill(choice.skill, choice.params, ctx, me);
+            this.skillStatus.set(agentId, status);
+            applyCpcAction(me, status.action);
+        }
+    }
+
+    private skillInfo(): EpisodeInfo["skills"] {
+        if (this.currentSkill.size === 0) return null;
+        const out: Record<string, { skill: SkillName; done: boolean; failed?: string }> = {};
+        for (const [agentId, choice] of this.currentSkill) {
+            const status = this.skillStatus.get(agentId);
+            out[agentId] = { skill: choice.skill, done: status?.done ?? false };
+            if (status?.failed) out[agentId].failed = status.failed;
+        }
+        return out;
+    }
+
+    /** Wire params -> engine params. Agents are named by agent id, points by `{x, y}`. */
+    private resolveSkill(request: SkillRequest): SkillChoice {
+        const params = request.params ?? {};
+        const at = (key: string): Player => {
+            const id = wireString(params[key], `${request.skill}.params.${key}`);
+            if (!id) throw new Error(`skill ${request.skill} needs params.${key} (an agent id)`);
+            return this.playerOf(id);
+        };
+        const maybeAt = (key: string): Player | undefined =>
+            params[key] === undefined || params[key] === null ? undefined : at(key);
+
+        switch (request.skill) {
+            case "move_to":
+                return {
+                    skill: "move_to",
+                    params: {
+                        pos: wireVec(params.pos, "move_to.params.pos"),
+                        arrive: wireNumber(params.arrive, "move_to.params.arrive"),
+                        face: params.face === undefined || params.face === null
+                            ? undefined
+                            : wireVec(params.face, "move_to.params.face"),
+                    },
+                };
+            case "follow":
+                return {
+                    skill: "follow",
+                    params: { target: at("target"), distance: wireNumber(params.distance, "follow.params.distance") },
+                };
+            case "loot":
+                return { skill: "loot", params: { type: wireString(params.type, "loot.params.type") } };
+            case "heal":
+                return { skill: "heal", params: { item: wireString(params.item, "heal.params.item") } };
+            case "engage": {
+                const style = wireString(params.style, "engage.params.style");
+                if (style !== undefined && style !== "push" && style !== "hold_angle" && style !== "trade") {
+                    throw new Error(`engage.params.style must be push | hold_angle | trade, got ${style}`);
+                }
+                return { skill: "engage", params: { target: at("target"), style } };
+            }
+            case "retreat":
+                return {
+                    skill: "retreat",
+                    params: {
+                        awayFrom: maybeAt("away_from"),
+                        distance: wireNumber(params.distance, "retreat.params.distance"),
+                    },
+                };
+            case "revive":
+                return { skill: "revive", params: { target: at("target") } };
+            default:
+                throw new Error(`unknown skill ${JSON.stringify(request.skill)}`);
+        }
     }
 
     private playerOf(agentId: string): Player {
@@ -479,7 +651,7 @@ export class CpcEpisode {
             teams: Object.fromEntries(this.teamOf),
             obs,
             events,
-            info: { ...this.info, objective: this.objectiveInfo() },
+            info: { ...this.info, objective: this.objectiveInfo(), skills: this.skillInfo() },
         };
     }
 }

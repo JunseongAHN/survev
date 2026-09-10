@@ -1,6 +1,10 @@
 import { App, type TemplatedApp, us_listen_socket_close, type us_listen_socket, type WebSocket } from "uWebSockets.js";
-import type { CpcAction } from "./applyCpcAction.ts";
-import { CpcEpisode, type EpisodeOptions, type ObsMessage } from "./episode.ts";
+import {
+    type ControlledAction,
+    CpcEpisode,
+    type EpisodeOptions,
+    type ObsMessage,
+} from "./episode.ts";
 
 interface ResetRequest {
     type: "reset";
@@ -14,9 +18,9 @@ interface StepRequest {
     type: "step";
     env_id?: number;
     ticks?: number;
-    actions?: Record<string, CpcAction>;
+    actions?: Record<string, ControlledAction>;
     /** batched form: env id -> { ticks, actions } */
-    envs?: Record<string, { ticks?: number; actions?: Record<string, CpcAction> }>;
+    envs?: Record<string, { ticks?: number; actions?: Record<string, ControlledAction> }>;
 }
 
 interface CloseRequest {
@@ -45,7 +49,7 @@ function errorMessage(envId: number | undefined, message: string) {
 function stepEnv(
     envs: Map<number, CpcEpisode>,
     envId: number,
-    req: { ticks?: number; actions?: Record<string, CpcAction> },
+    req: { ticks?: number; actions?: Record<string, ControlledAction> },
 ): ObsMessage | ReturnType<typeof errorMessage> {
     const episode = envs.get(envId);
     if (!episode) return errorMessage(envId, `unknown env ${envId}, call reset first`);
