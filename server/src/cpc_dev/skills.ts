@@ -184,19 +184,31 @@ function follow(ctx: SkillContext, me: Player, params: SkillParams["follow"]): S
     return { action, done: false };
 }
 
+/** What the agent is shopping for: a gun, then ammo for it. `undefined` = nothing. */
+function wantedLoot(me: Player, type?: string): Set<string> | undefined {
+    if (type) return new Set([type]);
+    if (!hasGun(me)) return guns;
+    const weapon = me.weapons[gunSlot(me)];
+    const ammoType = ammoOf[weapon.type];
+    const reserve = (me.inventory as Readonly<Record<string, number>>)[ammoType] ?? 0;
+    return weapon.ammo === 0 && reserve === 0 ? new Set([ammoType]) : undefined;
+}
+
+/**
+ * Whether `loot` is worth selecting, without running it. A selector needs this: asking for the
+ * skill when there is nothing to fetch would leave the agent standing still instead of moving on
+ * to the next priority. An agent with no gun at all is the exception — it waits for one to exist.
+ */
+export function wantsLoot(ctx: SkillContext, me: Player, type?: string): boolean {
+    const wanted = wantedLoot(me, type);
+    if (!wanted) return false;
+    if (!hasGun(me) && !type) return true;
+    return ctx.game.lootBarn.loots.some((l) => !l.destroyed && wanted.has(l.type));
+}
+
 /** Pick up what the agent needs next: a gun, then ammo for it. `lootAction`, unchanged. */
 function loot(ctx: SkillContext, me: Player, params: SkillParams["loot"]): SkillStatus {
-    let wanted: Set<string> | undefined;
-    if (params.type) {
-        wanted = new Set([params.type]);
-    } else if (!hasGun(me)) {
-        wanted = guns;
-    } else {
-        const weapon = me.weapons[gunSlot(me)];
-        const ammoType = ammoOf[weapon.type];
-        const reserve = (me.inventory as Readonly<Record<string, number>>)[ammoType] ?? 0;
-        if (weapon.ammo === 0 && reserve === 0) wanted = new Set([ammoType]);
-    }
+    const wanted = wantedLoot(me, params.type);
     if (!wanted) return { action: {}, done: true };
 
     const piles = ctx.game.lootBarn.loots.filter((l) => !l.destroyed && wanted.has(l.type));

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { platform } from "node:os";
 import path from "node:path";
 import { Config } from "../config.ts";
+import { attachCpcLive } from "../cpc_dev/liveHook.ts";
 import { apiPrivateRouter } from "../utils/apiRouter.ts";
 import { logErrorToWebhook } from "../utils/logger.ts";
 import type { SaveGameBody } from "../utils/types.ts";
@@ -201,6 +202,9 @@ process.on("message", (msg: ProcessMsg) => {
 
     if (msg.type === ProcessMsgType.Create && !game) {
         game = new ServerGame(msg.id, msg.config);
+
+        // CPC live playtest (`pnpm cpc:live`): inert unless CPC_LIVE is set
+        attachCpcLive(game);
 
         sendMsg({
             type: ProcessMsgType.Created,

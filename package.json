@@ -14,6 +14,7 @@
     "cpc:duo2v2:snapshot": "tsx server/src/cpc_dev/writeDuo2v2Snapshot.ts",
     "cpc:bridge": "tsx server/src/cpc_dev/bridgeMain.ts",
     "cpc:episode": "tsx server/src/cpc_dev/episodeMain.ts",
+    "cpc:live": "CPC_LIVE=1 concurrently \"pnpm run dev:api\" \"pnpm run dev:game\" \"pnpm run dev:client\"",
     "stressTest": "cd server && pnpm stressTest",
     "lint": "oxlint --fix; dprint fmt",
     "lint:ci": "oxlint; dprint check"

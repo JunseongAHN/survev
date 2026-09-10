@@ -216,6 +216,9 @@ setInterval(() => {
 
 const honoServer = serve({
     fetch: app.fetch,
+    // `host` was configurable and logged but never passed, so the API always bound every
+    // interface; the default is still 0.0.0.0, so only a configured host changes behaviour
+    hostname: Config.apiServer.host,
     port: Config.apiServer.port,
 });
 injectWebSocket(honoServer);

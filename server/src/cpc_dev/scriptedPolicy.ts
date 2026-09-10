@@ -30,6 +30,7 @@ import {
     type SkillOptions,
     type SkillParams,
     trackContact,
+    wantsLoot,
     weaponInputs,
 } from "./skills.ts";
 
@@ -67,6 +68,9 @@ export function selectSkill(ctx: ScriptedContext, me: Player, engageDist: number
     // what makes `reactionDelay` a delay on *seeing* an enemy rather than on choosing to fight
     trackContact(ctx, me, enemy);
 
+    // shopping outranks everything: an unarmed agent has nothing to contribute to a fight
+    if (wantsLoot(ctx, me)) return { skill: "loot", params: {} };
+
     const teammate = ctx.players.find((p) => p !== me && p.groupId === me.groupId && alive(p));
     if (teammate?.downed && (!enemy || enemy.dist > reviveSafeDist)) {
         return { skill: "revive", params: { target: teammate } };
@@ -91,24 +95,8 @@ export function selectSkill(ctx: ScriptedContext, me: Player, engageDist: number
     return undefined;
 }
 
-/** Advances the fire-range contact clock, whatever the agent goes on to do this tick. */
-function noteContact(ctx: ScriptedContext, me: Player): void {
-    const enemies = ctx.players.filter((p) => p.groupId !== me.groupId && alive(p));
-    trackContact(ctx, me, nearest(me.pos, enemies, (p) => p.pos));
-}
-
 function act(ctx: ScriptedContext, me: Player, engageDist: number): CpcAction {
     if (me.dead || me.downed) return {};
-
-    // the clock is advanced before anything else, so `reactionDelay` measures time since the enemy
-    // came into range rather than time since the bot decided to fight — it keeps running while the
-    // bot is shopping. `selectSkill` calls `trackContact` again, which is idempotent within a tick.
-    noteContact(ctx, me);
-
-    // looting is not part of the priority order: an unarmed bot has nothing to contribute to a
-    // fight, so it goes shopping whatever else is happening
-    const shopping = runSkill("loot", {}, ctx, me);
-    if (!shopping.done) return shopping.action;
 
     const choice = selectSkill(ctx, me, engageDist);
     if (!choice) return { inputs: weaponInputs(me) };
