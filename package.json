@@ -13,6 +13,7 @@
     "build": "cd server && pnpm build && cd ../client && pnpm build",
     "cpc:duo2v2:snapshot": "tsx server/src/cpc_dev/writeDuo2v2Snapshot.ts",
     "cpc:bridge": "tsx server/src/cpc_dev/bridgeMain.ts",
+        "cpc:episode": "tsx server/src/cpc_dev/episodeMain.ts",
     "stressTest": "cd server && pnpm stressTest",
     "lint": "oxlint --fix; dprint fmt",
     "lint:ci": "oxlint; dprint check"

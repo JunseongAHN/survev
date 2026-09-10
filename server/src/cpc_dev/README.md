@@ -134,9 +134,32 @@ Teams wear distinct body skins by default so a spectator (or a rendered frame) c
 pnpm cpc:bridge -- --port=8765     # ws://127.0.0.1:8765
 ```
 
+## One episode without a bridge (`episodeMain.ts`, M10)
+
+```sh
+pnpm cpc:episode -- --scenario duo2v2 --policy random --seconds 60 --out .tmp/ep.jsonl
+```
+
+Runs one episode through `CpcEpisode` in this process and writes it as JSONL — one line per step,
+each line the `ObsMessage` the bridge would have sent (observations for every agent, that step's
+events, and `info`, with `info.metrics` on the last line). No WebSocket, no Python: this is the
+smallest way to ask "does the scenario still run", and what CI calls.
+
+`--policy` is `random` (seeded random actions for team-a, the floor a real policy is compared
+against) or `chaser` / `racer` / `idle` (the server scripts all four). `--scripted` sets the
+opponent when the policy is `random`; `--seed`, `--ticks` and `--seconds` are the usual knobs.
+Both `--name value` and `--name=value` are accepted. Typical output on this hardware is ~50x real
+time for a 60 s limit.
+
 Measured with the Python client on 2 vCPUs: `ticks=10` ~42x real time per env, `ticks=3` ~33x, `ticks=1` ~14x; 8 envs batched in one process ~136x aggregate.
 
-Tests: `episode.test.ts` (allowlisted observations, view-rectangle parity with `visibleObjects`, held/released inputs, elimination + metrics, time limit + events, `shots_heard` earshot gating), `shotsHeard.test.ts` (compass and distance buckets, the radius as a circle) and `bridgeServer.test.ts` (websocket round trip). The bridge test needs a platform where the uWebSockets.js binary loads (Windows / recent glibc).
+The phase-0 acceptance sweep is on the Python side:
+`python -m pytest experiment/survev_rl/tests/test_phase0_acceptance.py` in the harness repo walks
+M1 / M6 / M7 / M8 and reports throughput, against a real bridge when `CPC_BRIDGE_URL` is set and
+the Python mock otherwise. M2-M5, M9 and M10 stay here as vitest and as the runner above; the
+test's own docstring carries that table.
+
+Tests: `episode.test.ts` (allowlisted observations, view-rectangle parity with `visibleObjects`, held/released inputs, elimination + metrics, time limit + events, `shots_heard` earshot gating), `shotsHeard.test.ts` (compass and distance buckets, the radius as a circle), `determinism.test.ts` (M9: what the seed fixes and what it does not) and `bridgeServer.test.ts` (websocket round trip). The bridge test needs a platform where the uWebSockets.js binary loads (Windows / recent glibc).
 
 Next PRs:
 
