@@ -311,7 +311,7 @@ export class CpcEpisode {
         for (const [agentId, action] of Object.entries(actions)) {
             if (!this.options.controlled.includes(agentId)) throw new Error(`${agentId} is not a controlled agent`);
             if (isSkillRequest(action)) {
-                this.currentSkill.set(agentId, this.resolveSkill(action));
+                this.currentSkill.set(agentId, this.resolveSkill(agentId, action));
                 this.skillStatus.delete(agentId);
             } else {
                 // raw inputs replace whatever skill was committed to
@@ -393,7 +393,7 @@ export class CpcEpisode {
     }
 
     /** Wire params -> engine params. Agents are named by agent id, points by `{x, y}`. */
-    private resolveSkill(request: SkillRequest): SkillChoice {
+    private resolveSkill(agentId: string, request: SkillRequest): SkillChoice {
         const params = request.params ?? {};
         const at = (key: string): Player => {
             const id = wireString(params[key], `${request.skill}.params.${key}`);
@@ -404,17 +404,18 @@ export class CpcEpisode {
             params[key] === undefined || params[key] === null ? undefined : at(key);
 
         switch (request.skill) {
-            case "move_to":
-                return {
-                    skill: "move_to",
-                    params: {
-                        pos: wireVec(params.pos, "move_to.params.pos"),
-                        arrive: wireNumber(params.arrive, "move_to.params.arrive"),
-                        face: params.face === undefined || params.face === null
-                            ? undefined
-                            : wireVec(params.face, "move_to.params.face"),
-                    },
-                };
+            case "move_to": {
+                const arrive = wireNumber(params.arrive, "move_to.params.arrive");
+                const face = params.face === undefined || params.face === null
+                    ? undefined
+                    : wireVec(params.face, "move_to.params.face");
+                // a planner names places the way the state block does; raw coordinates stay for
+                // programmatic callers (the Python skill mode)
+                const pos = params.to !== undefined && params.to !== null
+                    ? this.namedPosition(agentId, wireString(params.to, "move_to.params.to")!)
+                    : wireVec(params.pos, "move_to.params.pos");
+                return { skill: "move_to", params: { pos, arrive, face } };
+            }
             case "follow":
                 return {
                     skill: "follow",
@@ -623,11 +624,45 @@ export class CpcEpisode {
         return result;
     }
 
-    private message(events: BridgeEvent[]): ObsMessage {
-        const ids: ObservationIds = {
+    private observationIds(): ObservationIds {
+        return {
             agentIdOf: (p) => this.agentIdOf.get(p.__id) ?? p.name,
             teamIdOf: (p) => this.teamOf.get(this.agentIdOf.get(p.__id) ?? "") ?? String(p.groupId),
         };
+    }
+
+    /**
+     * A place named the way the state block names it — `"point"`, an agent id, `"loot:ak47"` —
+     * resolved against this agent's own observation. Looking it up anywhere else would let the
+     * planner steer by things the agent cannot see, so an enemy outside the view rectangle or an
+     * item that is not on screen cannot be a destination.
+     */
+    private namedPosition(agentId: string, to: string): Vec2 {
+        const obs = extractAgentObservation(
+            this.game,
+            this.playerOf(agentId),
+            this.observationIds(),
+            this.objective ? this.objective.observe(this.playerOf(agentId).pos) : null,
+        );
+        if (to === "point") {
+            if (!obs.objective) throw new Error(`move_to.params.to is "point" but there is no objective`);
+            return v2.copy(obs.objective.pos);
+        }
+        if (to.startsWith("loot:")) {
+            const type = to.slice("loot:".length);
+            const pile = obs.loot.filter((l) => l.type === type).sort((a, b) => a.dist - b.dist)[0];
+            if (!pile) throw new Error(`move_to.params.to: no ${type} in view`);
+            return v2.copy(pile.pos);
+        }
+        const mate = obs.teammates.find((t) => t.id === to);
+        if (mate) return v2.copy(mate.pos);
+        const enemy = obs.players.find((p) => p.id === to);
+        if (enemy) return v2.copy(enemy.pos);
+        throw new Error(`move_to.params.to: ${to} is not in view`);
+    }
+
+    private message(events: BridgeEvent[]): ObsMessage {
+        const ids = this.observationIds();
         // shots of this step, bucketed per listener from where each agent stands now
         const fires = events.filter((e) => e.type === "fire" && e.pos);
         const obs: Record<string, AgentObservation> = {};

@@ -532,3 +532,36 @@ test("bad skill requests are rejected with the field that was wrong", () => {
         .toThrow(/arrive must be a finite number/);
     episode.close();
 });
+
+// A planner names places the way the state block does, and only what its agent can see.
+test("move_to takes a named target, resolved against the agent's own view", () => {
+    const episode = new CpcEpisode({
+        seed: "cpc-skill-test",
+        scripted: "idle",
+        controlled: ["team-a-0", "team-a-1"],
+        objective: { mode: "race", radius: 4 },
+        timeLimit: 30,
+    });
+    const first = episode.reset();
+    const move = (to: string) => ({ "team-a-0": { skill: "move_to" as const, params: { to } } });
+
+    // at spawn the enemy duo is 64 u away, outside the view rectangle: it cannot be a destination
+    expect(first.obs["team-a-0"].players).toHaveLength(0);
+    expect(() => episode.step(move("team-b-0"), 1)).toThrow(/team-b-0 is not in view/);
+    expect(() => episode.step(move("loot:nothere"), 1)).toThrow(/no nothere in view/);
+
+    // a listed item, by type
+    const item = first.obs["team-a-0"].loot[0];
+    let msg = episode.step(move(`loot:${item.type}`), 10);
+    expect(msg.info.skills!["team-a-0"]).toMatchObject({ skill: "move_to" });
+
+    // the teammate is on the HUD whether or not it is on screen
+    msg = episode.step(move("team-a-1"), 10);
+    expect(msg.info.skills!["team-a-0"]).toMatchObject({ skill: "move_to" });
+
+    // the race point
+    const before = msg.obs["team-a-0"].objective!.dist;
+    msg = episode.step(move("point"), 30);
+    expect(msg.obs["team-a-0"].objective!.dist).toBeLessThan(before);
+    episode.close();
+});

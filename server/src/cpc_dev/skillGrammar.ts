@@ -18,7 +18,9 @@ import type { SkillName } from "./skills.ts";
 
 /** What each skill's `params` object looks like on the wire, as GBNF. */
 const paramRules: Record<SkillName, string> = {
-    move_to: `"{" ws "\\"pos\\"" ws ":" ws vec ( ws "," ws "\\"arrive\\"" ws ":" ws number )? ws "}"`,
+    // a named place, never coordinates: the state block gives bearings, and a 4B model asked for
+    // world positions writes "74m E" as {"x": 74, "y": 0}
+    move_to: `"{" ws "\\"to\\"" ws ":" ws target ( ws "," ws "\\"arrive\\"" ws ":" ws number )? ws "}"`,
     follow: `"{" ws "\\"target\\"" ws ":" ws agent ( ws "," ws "\\"distance\\"" ws ":" ws number )? ws "}"`,
     loot: `"{" ( ws "\\"type\\"" ws ":" ws string )? ws "}"`,
     heal: `"{" ( ws "\\"item\\"" ws ":" ws string )? ws "}"`,
@@ -81,6 +83,8 @@ say-text ::= "\\"" [^"\\\\\\n]{1,${sayMax}} "\\""
 ping ::= "\\"ping\\"" ws ":" ws ( vec | "null" )
 
 agent ::= ${quoted(options.agentIds)}
+target ::= "\\"point\\"" | agent | loot-target
+loot-target ::= "\\"loot:" [a-z0-9]{1,24} "\\""
 style ::= ${quoted(["push", "hold_angle", "trade"])}
 vec ::= "{" ws "\\"x\\"" ws ":" ws number ws "," ws "\\"y\\"" ws ":" ws number ws "}"
 number ::= "-"? [0-9]+ ( "." [0-9]+ )?

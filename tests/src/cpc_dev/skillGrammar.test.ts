@@ -61,3 +61,12 @@ test("a restricted skill list narrows the choice", () => {
     expect(() => buildSkillGrammar({ agentIds, skills: [] })).toThrow(/at least one skill/);
     expect(() => buildSkillGrammar({ agentIds: [] })).toThrow(/agentIds is required/);
 });
+
+// the planner is never asked for coordinates: a 4B model given bearings wrote "74m E" as {"x": 74, "y": 0}
+test("move_to offers named targets, not coordinates", () => {
+    const grammar = buildSkillGrammar({ agentIds });
+    const rule = grammar.split("\n").find((line) => line.startsWith("params-move-to ::="))!;
+    expect(rule).toContain(`"\\"to\\""`);
+    expect(rule).not.toContain(`"\\"pos\\""`);
+    expect(grammar).toMatch(/^target ::= "\\"point\\"" \| agent \| loot-target$/m);
+});
