@@ -142,6 +142,15 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
     let currentChoice: ReturnType<typeof selectSkill>;
     let cpcSkill: string | null = null;
     let tick = 0;
+    /**
+     * The AI's clock. Not `game.startedTime`: survev does not start a match until two groups each
+     * have someone alive for `minActiveTime`, and until then startedTime sits at 0. Driven by that,
+     * every reaction delay stayed unexpired (nobody ever fired) and every planner commit window stayed
+     * open — the first ~11 s of a match played as a standoff. This clock runs from the moment the
+     * scenario is set up.
+     */
+    let clockStart: number | undefined;
+    const now = () => (clockStart === undefined ? 0 : (performance.now() - clockStart) / 1000);
     /** System 2, when configured; the last skill status feeds its interrupts */
     let planner: PlannerLoop | undefined;
     let lastStatus: SkillStatus | undefined;
@@ -253,6 +262,7 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
             );
         }
 
+        clockStart = performance.now();
         game.preventStart = false;
         console.log(
             `[cpc:live] ${human.name} + CPC vs ${enemies.length} ${config.scripted}`
@@ -308,7 +318,7 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
         const ctx: ScriptedContext = {
             game,
             players: [cpc, ...humans(), ...enemies],
-            t: game.startedTime,
+            t: now(),
             rand,
             contactSince,
             noise: skillNoise,
@@ -327,7 +337,7 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
                 ?? (partner ? { skill: "follow", params: { target: partner, distance: 6 } } : undefined);
         if (tick % decisionTicks === 0 && !cpc.dead && !cpc.downed) {
             currentChoice = planner
-                ? planner.decide(game.startedTime, observe(), lastStatus, scriptedChoice)
+                ? planner.decide(now(), observe(), lastStatus, scriptedChoice)
                 : scriptedChoice();
             cpcSkill = currentChoice?.skill ?? null;
             cpcBrain = planner ? planner.source : "scripted";
@@ -356,8 +366,8 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
 
         update(dt);
         tick++;
-        objective?.tick(players, game.startedTime);
-        log(game.startedTime);
+        objective?.tick(players, now());
+        log(now());
     };
 
     return true;
