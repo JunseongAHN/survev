@@ -22,8 +22,10 @@ const paramRules: Record<SkillName, string> = {
     // world positions writes "74m E" as {"x": 74, "y": 0}
     move_to: `"{" ws "\\"to\\"" ws ":" ws target ( ws "," ws "\\"arrive\\"" ws ":" ws number )? ws "}"`,
     follow: `"{" ws "\\"target\\"" ws ":" ws agent ( ws "," ws "\\"distance\\"" ws ":" ws number )? ws "}"`,
-    loot: `"{" ( ws "\\"type\\"" ws ":" ws string )? ws "}"`,
-    heal: `"{" ( ws "\\"item\\"" ws ":" ws string )? ws "}"`,
+    // loot and heal decide for themselves what they need; the first live session had the planner
+    // name `{"type": "ammo"}`, which is not an item, so the grammar offers no field to get wrong
+    loot: `"{" ws "}"`,
+    heal: `"{" ws "}"`,
     engage: `"{" ws "\\"target\\"" ws ":" ws agent ( ws "," ws "\\"style\\"" ws ":" ws style )? ws "}"`,
     retreat: `"{" ( ws "\\"away_from\\"" ws ":" ws agent ( ws "," ws "\\"distance\\"" ws ":" ws number )? )? ws "}"`,
     revive: `"{" ws "\\"target\\"" ws ":" ws agent ws "}"`,
@@ -88,7 +90,6 @@ loot-target ::= "\\"loot:" [a-z0-9]{1,24} "\\""
 style ::= ${quoted(["push", "hold_angle", "trade"])}
 vec ::= "{" ws "\\"x\\"" ws ":" ws number ws "," ws "\\"y\\"" ws ":" ws number ws "}"
 number ::= "-"? [0-9]+ ( "." [0-9]+ )?
-string ::= "\\"" [a-z0-9_]{1,24} "\\""
 ws ::= [ \\t\\n]*
 `;
 }

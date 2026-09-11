@@ -30,6 +30,7 @@ import {
     type SkillStatus,
 } from "./skills.ts";
 import { seededRand } from "./seededRand.ts";
+import { resolveSkillRequest, type SkillRequest } from "./skillWire.ts";
 
 export interface EpisodeOptions {
     scenario?: "duo2v2_field";
@@ -58,15 +59,7 @@ export interface EpisodeOptions {
     endOnElimination?: boolean;
 }
 
-/**
- * Wire form of a System 1 skill request. Params name agents by agent id and points by `{x, y}`;
- * `episode` resolves them, because it owns the id map. Held like a primitive action: the skill runs
- * every tick until another action replaces it, which is the commit half of the planner's loop.
- */
-export interface SkillRequest {
-    skill: SkillName;
-    params?: Record<string, unknown>;
-}
+export type { SkillRequest } from "./skillWire.ts";
 
 /** What a controlled agent may be sent: raw inputs, or a skill for System 1 to execute. */
 export type ControlledAction = CpcAction | SkillRequest;
@@ -147,28 +140,6 @@ export interface ObsMessage {
 /** A controlled action is a skill request when it names one; otherwise it is raw inputs. */
 export function isSkillRequest(action: ControlledAction): action is SkillRequest {
     return typeof (action as SkillRequest).skill === "string";
-}
-
-function wireVec(value: unknown, where: string): Vec2 {
-    const v = value as { x?: unknown; y?: unknown } | undefined;
-    if (!v || typeof v.x !== "number" || typeof v.y !== "number") {
-        throw new Error(`${where} must be {x, y}, got ${JSON.stringify(value)}`);
-    }
-    return v2.create(v.x, v.y);
-}
-
-function wireNumber(value: unknown, where: string): number | undefined {
-    if (value === undefined || value === null) return undefined;
-    if (typeof value !== "number" || !Number.isFinite(value)) {
-        throw new Error(`${where} must be a finite number, got ${JSON.stringify(value)}`);
-    }
-    return value;
-}
-
-function wireString(value: unknown, where: string): string | undefined {
-    if (value === undefined || value === null) return undefined;
-    if (typeof value !== "string") throw new Error(`${where} must be a string, got ${JSON.stringify(value)}`);
-    return value;
 }
 
 
@@ -394,57 +365,17 @@ export class CpcEpisode {
 
     /** Wire params -> engine params. Agents are named by agent id, points by `{x, y}`. */
     private resolveSkill(agentId: string, request: SkillRequest): SkillChoice {
-        const params = request.params ?? {};
-        const at = (key: string): Player => {
-            const id = wireString(params[key], `${request.skill}.params.${key}`);
-            if (!id) throw new Error(`skill ${request.skill} needs params.${key} (an agent id)`);
-            return this.playerOf(id);
-        };
-        const maybeAt = (key: string): Player | undefined =>
-            params[key] === undefined || params[key] === null ? undefined : at(key);
-
-        switch (request.skill) {
-            case "move_to": {
-                const arrive = wireNumber(params.arrive, "move_to.params.arrive");
-                const face = params.face === undefined || params.face === null
-                    ? undefined
-                    : wireVec(params.face, "move_to.params.face");
-                // a planner names places the way the state block does; raw coordinates stay for
-                // programmatic callers (the Python skill mode)
-                const pos = params.to !== undefined && params.to !== null
-                    ? this.namedPosition(agentId, wireString(params.to, "move_to.params.to")!)
-                    : wireVec(params.pos, "move_to.params.pos");
-                return { skill: "move_to", params: { pos, arrive, face } };
-            }
-            case "follow":
-                return {
-                    skill: "follow",
-                    params: { target: at("target"), distance: wireNumber(params.distance, "follow.params.distance") },
-                };
-            case "loot":
-                return { skill: "loot", params: { type: wireString(params.type, "loot.params.type") } };
-            case "heal":
-                return { skill: "heal", params: { item: wireString(params.item, "heal.params.item") } };
-            case "engage": {
-                const style = wireString(params.style, "engage.params.style");
-                if (style !== undefined && style !== "push" && style !== "hold_angle" && style !== "trade") {
-                    throw new Error(`engage.params.style must be push | hold_angle | trade, got ${style}`);
-                }
-                return { skill: "engage", params: { target: at("target"), style } };
-            }
-            case "retreat":
-                return {
-                    skill: "retreat",
-                    params: {
-                        awayFrom: maybeAt("away_from"),
-                        distance: wireNumber(params.distance, "retreat.params.distance"),
-                    },
-                };
-            case "revive":
-                return { skill: "revive", params: { target: at("target") } };
-            default:
-                throw new Error(`unknown skill ${JSON.stringify(request.skill)}`);
-        }
+        return resolveSkillRequest(request, {
+            playerOf: (id) => this.playerOf(id),
+            // named places resolve against this agent's own view, never the whole world
+            observation: () =>
+                extractAgentObservation(
+                    this.game,
+                    this.playerOf(agentId),
+                    this.observationIds(),
+                    this.objective ? this.objective.observe(this.playerOf(agentId).pos) : null,
+                ),
+        });
     }
 
     private playerOf(agentId: string): Player {
@@ -629,36 +560,6 @@ export class CpcEpisode {
             agentIdOf: (p) => this.agentIdOf.get(p.__id) ?? p.name,
             teamIdOf: (p) => this.teamOf.get(this.agentIdOf.get(p.__id) ?? "") ?? String(p.groupId),
         };
-    }
-
-    /**
-     * A place named the way the state block names it — `"point"`, an agent id, `"loot:ak47"` —
-     * resolved against this agent's own observation. Looking it up anywhere else would let the
-     * planner steer by things the agent cannot see, so an enemy outside the view rectangle or an
-     * item that is not on screen cannot be a destination.
-     */
-    private namedPosition(agentId: string, to: string): Vec2 {
-        const obs = extractAgentObservation(
-            this.game,
-            this.playerOf(agentId),
-            this.observationIds(),
-            this.objective ? this.objective.observe(this.playerOf(agentId).pos) : null,
-        );
-        if (to === "point") {
-            if (!obs.objective) throw new Error(`move_to.params.to is "point" but there is no objective`);
-            return v2.copy(obs.objective.pos);
-        }
-        if (to.startsWith("loot:")) {
-            const type = to.slice("loot:".length);
-            const pile = obs.loot.filter((l) => l.type === type).sort((a, b) => a.dist - b.dist)[0];
-            if (!pile) throw new Error(`move_to.params.to: no ${type} in view`);
-            return v2.copy(pile.pos);
-        }
-        const mate = obs.teammates.find((t) => t.id === to);
-        if (mate) return v2.copy(mate.pos);
-        const enemy = obs.players.find((p) => p.id === to);
-        if (enemy) return v2.copy(enemy.pos);
-        throw new Error(`move_to.params.to: ${to} is not in view`);
     }
 
     private message(events: BridgeEvent[]): ObsMessage {

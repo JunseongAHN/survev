@@ -70,3 +70,13 @@ test("move_to offers named targets, not coordinates", () => {
     expect(rule).not.toContain(`"\\"pos\\""`);
     expect(grammar).toMatch(/^target ::= "\\"point\\"" \| agent \| loot-target$/m);
 });
+
+// the first live planner session produced `loot {"type": "ammo"}` — not an item — so the skill
+// failed and the planner was asked again; loot and heal now take no fields at all
+test("loot and heal take no parameters", () => {
+    const grammar = buildSkillGrammar({ agentIds });
+    for (const skill of ["loot", "heal"]) {
+        const rule = grammar.split("\n").find((line) => line.startsWith(`params-${skill} ::=`))!;
+        expect(rule).toBe(`params-${skill} ::= "{" ws "}"`);
+    }
+});

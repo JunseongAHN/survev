@@ -11,8 +11,10 @@
  * tick, exactly as `CpcEpisode` does — the point being that the live and headless paths run the
  * same System 1 code, so what the playtest reveals is a real property of the agent.
  *
- * The teammate's brain is deliberately the *scripted selector* for now: week 2 is about whether the
- * skills feel like a person to play with, before an SLM is choosing between them.
+ * With `CPC_PLANNER_URL` set, the teammate's brain is the SLM planner under the commit/interrupt
+ * loop (`plannerLoop.ts`); the scripted selector only covers the gaps — before the first reply and
+ * after an error — so a slow or dead planner never freezes the teammate. Without it, the scripted
+ * selector picks, as in week 2.
  *
  * Environment:
  *   CPC_LIVE=1                      enable (required)
@@ -21,6 +23,9 @@
  *   CPC_HUMANIZATION={json}         CPC motor constraints, same three keys plus pathJitterDeg
  *   CPC_OBJECTIVE=race|none         shared capture point (default none)
  *   CPC_SEED=...                    loot layout / spawn geometry (default the scenario default)
+ *   CPC_PLANNER_URL=http://...      System 2 (llama-server); unset = scripted brain
+ *   CPC_SAY_LANG=ko|en              language of the planner's chat lines (default ko)
+ *   CPC_PLANNER_TIMEOUT_MS=2000     a slower reply counts as an error and the fallback plays on
  *   CPC_LOG=path.jsonl              append one line per second of game time (positions, hp, skill)
  */
 
@@ -32,15 +37,22 @@ import type { Player } from "../game/objects/player.ts";
 import { applyCpcAction } from "./applyCpcAction.ts";
 import { normalizeSeed } from "./createScenarioGame.ts";
 import { type ObjectiveOptions, RaceObjective } from "./objective.ts";
+import { type AgentObservation, extractAgentObservation, type ObservationIds } from "./observation.ts";
+import { askPlanner } from "./plannerClient.ts";
+import { type PlannerEvent, PlannerLoop } from "./plannerLoop.ts";
+import { plannerSystemPrompt, type SayLanguage } from "./plannerPrompt.ts";
 import {
     scriptedAction,
     type ScriptedContext,
     type ScriptedOptions,
     type ScriptedPolicyName,
     selectSkill,
+    type SkillChoice,
 } from "./scriptedPolicy.ts";
 import { seededRand } from "./seededRand.ts";
-import { type HeldNoise, runSkill, type SkillOptions } from "./skills.ts";
+import { buildSkillGrammar } from "./skillGrammar.ts";
+import { type HeldNoise, runSkill, type SkillOptions, type SkillStatus, weaponInputs } from "./skills.ts";
+import { resolveSkillRequest } from "./skillWire.ts";
 
 /** Same streams as `CpcEpisode`, so a seed means the same layout live and headless. */
 const lootStream = 0;
@@ -58,6 +70,9 @@ interface LiveConfig {
     objective: ObjectiveOptions;
     seed: string;
     log?: string;
+    plannerUrl?: string;
+    sayLanguage: SayLanguage;
+    plannerTimeoutMs: number;
 }
 
 function readJson<T>(raw: string | undefined, where: string): T | undefined {
@@ -85,6 +100,9 @@ export function liveConfigFromEnv(env: NodeJS.ProcessEnv = process.env): LiveCon
         objective,
         seed: env.CPC_SEED ?? "cpc-live-seed-0",
         log: env.CPC_LOG,
+        plannerUrl: env.CPC_PLANNER_URL || undefined,
+        sayLanguage: env.CPC_SAY_LANG === "en" ? "en" : "ko",
+        plannerTimeoutMs: Number(env.CPC_PLANNER_TIMEOUT_MS ?? 2000),
     };
 }
 
@@ -124,6 +142,28 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
     let currentChoice: ReturnType<typeof selectSkill>;
     let cpcSkill: string | null = null;
     let tick = 0;
+    /** System 2, when configured; the last skill status feeds its interrupts */
+    let planner: PlannerLoop | undefined;
+    let lastStatus: SkillStatus | undefined;
+    let cpcBrain: "scripted" | "planner" | "fallback" | "down" = "scripted";
+    /** stable ids for the planner: the CPC is team-a-0, the human team-a-1, the bots team-b-0/1 */
+    const agentIdOf = new Map<Player, string>();
+    const ids: ObservationIds = {
+        agentIdOf: (p) => agentIdOf.get(p) ?? p.name,
+        teamIdOf: (p) => (agentIdOf.get(p) ?? "").startsWith("team-a") ? "team-a" : "team-b",
+    };
+    const observe = (): AgentObservation =>
+        extractAgentObservation(game, cpc!, ids, objective ? objective.observe(cpc!.pos) : null);
+    const plannerLog = config.log ? `${config.log.replace(/\.jsonl$/, "")}.planner.jsonl` : undefined;
+    function logPlanner(event: PlannerEvent): void {
+        if (event.kind === "decided" && event.say) console.log(`[cpc:say] ${event.say}`);
+        if (event.kind === "error" || event.kind === "rejected") {
+            console.log(`[cpc:planner] ${event.kind}: ${event.error}`);
+        }
+        if (!plannerLog) return;
+        mkdirSync(dirname(plannerLog), { recursive: true });
+        appendFileSync(plannerLog, JSON.stringify(event) + "\n", "utf8");
+    }
     let objective: RaceObjective | undefined;
     let lastLog = -1;
 
@@ -163,6 +203,30 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
         enemies = [0, 1].map((i) =>
             game.playerBarn.addTestPlayer({ group: enemyGroup, pos: spawnAt(1, i as 0 | 1), name: `BOT-${i}` })
         );
+
+        agentIdOf.set(cpc, "team-a-0");
+        agentIdOf.set(human, "team-a-1");
+        enemies.forEach((bot, i) => agentIdOf.set(bot, `team-b-${i}`));
+        if (config.plannerUrl) {
+            const byId = new Map([...agentIdOf].map(([p, id]) => [id, p] as const));
+            const grammar = buildSkillGrammar({ agentIds: [...byId.keys()] });
+            const systemPrompt = plannerSystemPrompt(config.sayLanguage);
+            const url = config.plannerUrl;
+            planner = new PlannerLoop({
+                agentId: "team-a-0",
+                ask: (block) => askPlanner({ url, systemPrompt, block, grammar, timeoutMs: config.plannerTimeoutMs }),
+                resolve: (request) =>
+                    resolveSkillRequest(request, {
+                        playerOf: (id) => {
+                            const player = byId.get(id);
+                            if (!player) throw new Error(`unknown agent ${id}`);
+                            return player;
+                        },
+                        observation: observe,
+                    }),
+                onEvent: logPlanner,
+            });
+        }
 
         // seeded kits: one per duo 10 u toward the centre, one contested at the centre
         dropKit(teamKit, v2.create(centre.x - 22, centre.y), loot);
@@ -215,6 +279,7 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
                 action: p.actionType,
             })),
             cpc_skill: cpcSkill,
+            cpc_brain: cpcBrain,
             captures: objective ? objective.current.index : null,
         };
         mkdirSync(dirname(config.log), { recursive: true });
@@ -242,22 +307,36 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
             objective: objective ? { pos: objective.current.pos, radius: objective.radius } : undefined,
         };
 
-        // the CPC picks a skill at the policy cadence and executes it every tick, which is the
-        // commit/interrupt shape System 2 will drive; for now the scripted selector picks
+        // the CPC picks a skill at the policy cadence and executes it every tick. With a planner,
+        // System 2 picks under the commit/interrupt loop and the scripted selector only fills the
+        // gaps; without one, the selector picks
+        const cpcCtx: ScriptedContext = { ...ctx, options: config.humanization };
+        // nothing to fight, nothing to fetch: stay with the human. Idling is System 1's call, not a
+        // prompt rule — adding it to the prompt made the planner follow while being shot
+        const partner = humans().find((p) => !p.dead);
+        const scriptedChoice = (): SkillChoice | undefined =>
+            selectSkill(cpcCtx, cpc!, Number.POSITIVE_INFINITY)
+                ?? (partner ? { skill: "follow", params: { target: partner, distance: 6 } } : undefined);
         if (tick % decisionTicks === 0 && !cpc.dead && !cpc.downed) {
-            const choice = selectSkill({ ...ctx, options: config.humanization }, cpc, Number.POSITIVE_INFINITY);
-            cpcSkill = choice?.skill ?? null;
-            currentChoice = choice;
+            currentChoice = planner
+                ? planner.decide(game.startedTime, observe(), lastStatus, scriptedChoice)
+                : scriptedChoice();
+            cpcSkill = currentChoice?.skill ?? null;
+            cpcBrain = planner ? planner.source : "scripted";
+            // nothing to do: keep the gun equipped and loaded, as the scripted bots' idle branch
+            // does — the first planner session left the CPC standing with an empty clip
+            if (!currentChoice) applyCpcAction(cpc, { inputs: weaponInputs(cpc) });
+        } else if (tick % decisionTicks === 0) {
+            // downed or dead: no skill runs, and the log must not keep showing the last one
+            cpcSkill = null;
+            cpcBrain = "down";
         }
         if (currentChoice && !cpc.dead && !cpc.downed) {
-            const status = runSkill(
-                currentChoice.skill,
-                currentChoice.params as never,
-                { ...ctx, options: config.humanization },
-                cpc,
-            );
+            const status = runSkill(currentChoice.skill, currentChoice.params as never, cpcCtx, cpc);
             applyCpcAction(cpc, status.action);
-            if (status.done) currentChoice = undefined;
+            lastStatus = status;
+            // the planner loop reads `done` at its next decision; without it the skill is dropped now
+            if (status.done && !planner) currentChoice = undefined;
         }
 
         if (tick % decisionTicks === 0) {
