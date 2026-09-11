@@ -45,6 +45,13 @@ export interface SkillOptions {
     reactionDelay?: number;
     /** std-dev in degrees of the error added to movement direction, so paths are not straight lines */
     pathJitterDeg?: number;
+    /**
+     * Seconds a noise sample is held before a new one is drawn; defaults to the 0.1 s decision
+     * cadence. Noise is a property of a *decision*, not of a tick: skills re-run 100 times a
+     * second, and redrawing that often reads as a tremor rather than as a human's aim wobble,
+     * whose error is correlated over a few hundred ms (it drifts, then corrects).
+     */
+    noiseHoldSeconds?: number;
 }
 
 export interface SkillContext {
@@ -58,6 +65,14 @@ export interface SkillContext {
     rand?: () => number;
     /** game time at which each agent's current fire-range contact began, by player id */
     contactSince?: Map<number, number>;
+    /** held noise samples per agent, so aim and path wobble at decision rate and not at tick rate */
+    noise?: Map<number, HeldNoise>;
+}
+
+export interface HeldNoise {
+    until: number;
+    aim: number;
+    path: number;
 }
 
 export type SkillName = "move_to" | "follow" | "loot" | "heal" | "engage" | "retreat" | "revive";
@@ -130,18 +145,38 @@ function gaussian(rand: () => number): number {
     return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
 }
 
-function jitter(ctx: SkillContext, vec: Vec2, sigmaDeg: number): Vec2 {
-    if (sigmaDeg <= 0) return vec;
-    return v2.rotate(vec, (gaussian(ctx.rand ?? Math.random) * sigmaDeg * Math.PI) / 180);
+/**
+ * The standard-normal pair this agent is currently using. Without `ctx.noise` every call draws its
+ * own, which is the old per-decision behaviour of the scripted opponents; with it, a sample is kept
+ * for `noiseHoldSeconds` so a skill running every tick does not shake.
+ */
+function heldNoise(ctx: SkillContext, me: Player): { aim: number; path: number } {
+    const source = ctx.rand ?? Math.random;
+    if (!ctx.noise) return { aim: gaussian(source), path: gaussian(source) };
+    const hold = ctx.options?.noiseHoldSeconds ?? 0.1;
+    const current = ctx.noise.get(me.__id);
+    if (current && ctx.t < current.until) return current;
+    const fresh: HeldNoise = { until: ctx.t + hold, aim: gaussian(source), path: gaussian(source) };
+    ctx.noise.set(me.__id, fresh);
+    return fresh;
 }
 
-export function withAimNoise(ctx: SkillContext, aim: Vec2): Vec2 {
-    return jitter(ctx, aim, ctx.options?.aimNoiseDeg ?? 0);
+function rotateBy(vec: Vec2, normal: number, sigmaDeg: number): Vec2 {
+    if (sigmaDeg <= 0) return vec;
+    return v2.rotate(vec, (normal * sigmaDeg * Math.PI) / 180);
+}
+
+export function withAimNoise(ctx: SkillContext, me: Player, aim: Vec2): Vec2 {
+    const sigma = ctx.options?.aimNoiseDeg ?? 0;
+    if (sigma <= 0) return aim;
+    return rotateBy(aim, heldNoise(ctx, me).aim, sigma);
 }
 
 /** Movement is jittered too, so a path is not a straight line to its destination. */
-export function withPathJitter(ctx: SkillContext, move: Vec2): Vec2 {
-    return jitter(ctx, move, ctx.options?.pathJitterDeg ?? 0);
+export function withPathJitter(ctx: SkillContext, me: Player, move: Vec2): Vec2 {
+    const sigma = ctx.options?.pathJitterDeg ?? 0;
+    if (sigma <= 0) return move;
+    return rotateBy(move, heldNoise(ctx, me).path, sigma);
 }
 
 /** Tracks when this agent's fire-range contact started; false until the reaction delay has passed. */
@@ -167,7 +202,7 @@ function moveTo(ctx: SkillContext, me: Player, params: SkillParams["move_to"]): 
     const toPoint = v2.sub(params.pos, me.pos);
     const action: CpcAction = { aim: params.face ?? toPoint, inputs: weaponInputs(me) };
     if (v2.length(toPoint) <= arrive) return { action, done: true };
-    action.move = withPathJitter(ctx, toPoint);
+    action.move = withPathJitter(ctx, me, toPoint);
     return { action, done: false };
 }
 
@@ -179,7 +214,7 @@ function follow(ctx: SkillContext, me: Player, params: SkillParams["follow"]): S
     const toMate = v2.sub(target.pos, me.pos);
     const gap = v2.length(toMate);
     const action: CpcAction = { aim: toMate, inputs: weaponInputs(me) };
-    if (gap > distance) action.move = withPathJitter(ctx, toMate);
+    if (gap > distance) action.move = withPathJitter(ctx, me, toMate);
     else if (gap < distance * 0.5) action.move = v2.mul(toMate, -1);
     return { action, done: false };
 }
@@ -220,7 +255,7 @@ function loot(ctx: SkillContext, me: Player, params: SkillParams["loot"]): Skill
             : { action: {}, done: false };
     }
     const action: CpcAction = { aim: v2.sub(target.item.pos, me.pos) };
-    if (target.dist > 0.6) action.move = withPathJitter(ctx, v2.sub(target.item.pos, me.pos));
+    if (target.dist > 0.6) action.move = withPathJitter(ctx, me, v2.sub(target.item.pos, me.pos));
     if (target.dist < 2.2) action.inputs = [GameConfig.Input.Interact];
     return { action, done: false };
 }
@@ -244,15 +279,15 @@ function engage(ctx: SkillContext, me: Player, params: SkillParams["engage"]): S
     const toEnemy = v2.sub(target.pos, me.pos);
     const dist = v2.length(toEnemy);
     const inputs = weaponInputs(me);
-    const action: CpcAction = { aim: withAimNoise(ctx, toEnemy), inputs };
+    const action: CpcAction = { aim: withAimNoise(ctx, me, toEnemy), inputs };
     if (dist > 22) {
-        action.move = withPathJitter(ctx, toEnemy);
+        action.move = withPathJitter(ctx, me, toEnemy);
     } else if (dist < 10) {
-        action.move = withPathJitter(ctx, v2.mul(toEnemy, -1));
+        action.move = withPathJitter(ctx, me, v2.mul(toEnemy, -1));
     } else {
         // strafe, flipping direction every second
         const side = Math.floor(ctx.t) % 2 === 0 ? 1 : -1;
-        action.move = withPathJitter(ctx, v2.mul(v2.perp(toEnemy), side));
+        action.move = withPathJitter(ctx, me, v2.mul(v2.perp(toEnemy), side));
     }
     const reacted = trackContact(ctx, me, { dist });
     if (dist < fireRange && reacted && me.weapons[slot].ammo > 0 && me.curWeapIdx === slot) {
@@ -270,7 +305,7 @@ function retreat(ctx: SkillContext, me: Player, params: SkillParams["retreat"]):
     if (v2.length(away) >= distance) return { action: { aim: v2.mul(away, -1) }, done: true };
     // keep facing the threat while backing off
     return {
-        action: { move: withPathJitter(ctx, away), aim: v2.mul(away, -1), inputs: weaponInputs(me) },
+        action: { move: withPathJitter(ctx, me, away), aim: v2.mul(away, -1), inputs: weaponInputs(me) },
         done: false,
     };
 }
@@ -283,7 +318,7 @@ function revive(ctx: SkillContext, me: Player, params: SkillParams["revive"]): S
     const toMate = v2.sub(target.pos, me.pos);
     const inputs = weaponInputs(me);
     if (v2.length(toMate) > 2.5) {
-        return { action: { move: withPathJitter(ctx, toMate), aim: toMate, inputs }, done: false };
+        return { action: { move: withPathJitter(ctx, me, toMate), aim: toMate, inputs }, done: false };
     }
     return { action: { aim: toMate, inputs: [...inputs, GameConfig.Input.Revive] }, done: false };
 }

@@ -40,7 +40,7 @@ import {
     selectSkill,
 } from "./scriptedPolicy.ts";
 import { seededRand } from "./seededRand.ts";
-import { runSkill, type SkillOptions } from "./skills.ts";
+import { type HeldNoise, runSkill, type SkillOptions } from "./skills.ts";
 
 /** Same streams as `CpcEpisode`, so a seed means the same layout live and headless. */
 const lootStream = 0;
@@ -114,6 +114,9 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
     const seed = normalizeSeed(config.seed) ?? 0;
     const rand = seededRand(seed, skillStream);
     const contactSince = new Map<number, number>();
+    // the CPC runs its skill every tick, so its aim/path noise has to be held per decision or
+    // the character visibly shakes; the scripted enemies decide every 0.1 s and keep the old path
+    const skillNoise = new Map<number, HeldNoise>();
 
     let cpc: Player | undefined;
     let enemies: Player[] = [];
@@ -205,6 +208,11 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
                 weapon: p.activeWeapon,
                 // slots too: an agent can hold a gun it has not equipped, which `activeWeapon` hides
                 slots: p.weapons.map((w) => w.type || "-").join("/"),
+                // the fire gate, so "why did it not shoot" is answerable from the log: a looted gun
+                // arrives with a full clip, so a silent agent is walking, deploying (0.75 s) or
+                // waiting out its reaction delay — not reloading
+                clip: p.weapons[p.curWeapIdx]?.ammo ?? 0,
+                action: p.actionType,
             })),
             cpc_skill: cpcSkill,
             captures: objective ? objective.current.index : null,
@@ -230,6 +238,7 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
             t: game.startedTime,
             rand,
             contactSince,
+            noise: skillNoise,
             objective: objective ? { pos: objective.current.pos, radius: objective.radius } : undefined,
         };
 

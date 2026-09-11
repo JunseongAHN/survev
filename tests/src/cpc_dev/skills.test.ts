@@ -229,3 +229,31 @@ test("pathJitterDeg bends movement without changing the destination", () => {
     expect(angle).toBeGreaterThan(0);
     expect(angle).toBeLessThan(Math.PI / 2);
 });
+
+// A playtest finding: the CPC visibly shook. Skills re-run 100 times a second, and the noise was
+// redrawn on every call, so the aim and the path wobbled at tick rate instead of decision rate.
+test("held noise wobbles at decision rate, not tick rate", () => {
+    const { ctx, me, foe } = scene();
+    me.weaponManager.setWeapon(GameConfig.WeaponSlot.Primary, "ak47", 30);
+    me.weaponManager.setCurWeapIndex(GameConfig.WeaponSlot.Primary);
+
+    const options = { aimNoiseDeg: 10, pathJitterDeg: 10, noiseHoldSeconds: 0.1 };
+    const held: SkillContext = { ...ctx, options, rand: Math.random, noise: new Map() };
+    const perCall: SkillContext = { ...ctx, options, rand: Math.random };
+
+    const angles = (c: SkillContext) => {
+        const out: number[] = [];
+        for (let tick = 0; tick < 30; tick++) {
+            c.t = tick / ticksPerSecond; // 0.30 s = three decision windows
+            const aim = runSkill("engage", { target: foe }, c, me).action.aim!;
+            out.push(Math.atan2(aim.y, aim.x));
+        }
+        return out;
+    };
+    const distinct = (xs: number[]) => new Set(xs.map((x) => x.toFixed(9))).size;
+
+    // with a held sample the aim changes once per window, not once per tick
+    expect(distinct(angles(held))).toBeLessThanOrEqual(4);
+    // without one it is a new draw every tick, which is what the tremor was
+    expect(distinct(angles(perCall))).toBeGreaterThan(20);
+});

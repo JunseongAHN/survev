@@ -22,6 +22,7 @@ import {
     type SkillChoice,
 } from "./scriptedPolicy.ts";
 import {
+    type HeldNoise,
     runSkill,
     type SkillContext,
     type SkillName,
@@ -213,6 +214,8 @@ export class CpcEpisode {
     /** the skill each controlled agent is currently committed to, already resolved to players */
     private currentSkill = new Map<string, SkillChoice>();
     private skillStatus = new Map<string, SkillStatus>();
+    /** held aim/path noise, so a skill running every tick wobbles at decision rate */
+    private skillNoise = new Map<number, HeldNoise>();
     private info: EpisodeInfo = {
         alive_teams: 2,
         winner_team: null,
@@ -276,6 +279,7 @@ export class CpcEpisode {
         this.contactSince = new Map();
         this.currentSkill = new Map();
         this.skillStatus = new Map();
+        this.skillNoise = new Map();
         const { mode, ...objectiveOptions } = this.options.objective;
         this.objective = mode === "race"
             ? new RaceObjective(this.scenario.scenarioRegion, normalizeSeed(seed) ?? 0, objectiveOptions, 0)
@@ -367,6 +371,7 @@ export class CpcEpisode {
             options: this.options.humanization,
             rand: this.scriptedRand,
             contactSince: this.contactSince,
+            noise: this.skillNoise,
         };
         for (const [agentId, choice] of this.currentSkill) {
             const me = this.playerOf(agentId);
