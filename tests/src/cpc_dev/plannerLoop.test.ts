@@ -191,3 +191,39 @@ test("a decision that finishes at once is not re-asked immediately", async () =>
     loop.decide(1.35, baseObs, undefined, fallback);
     expect(planner.asked).toHaveLength(2);
 });
+
+// the playtest's eight revives under fire: every question now carries the skills that may run, and
+// the block tells the model the same thing the grammar enforces
+test("each question offers only the skills that can run now", async () => {
+    const { availableSkills } = await import("../../../server/src/cpc_dev/skillMask.ts");
+    const offered: Array<readonly string[]> = [];
+    const blocks: string[] = [];
+    const loop = new PlannerLoop({
+        agentId: "team-a-0",
+        ask: (block, skills) => {
+            blocks.push(block);
+            offered.push(skills);
+            return new Promise<PlannerReply>(() => {});
+        },
+        resolve: (request) => ({ skill: request.skill, params: {} }) as SkillChoice,
+    });
+    const obs = clone(baseObs);
+    obs.teammates[0].downed = true;
+    obs.players.push(
+        {
+            ...obs.teammates[0],
+            team: "team-b",
+            id: "team-b-0",
+            dist: 21,
+            dir: { x: 1, y: 0 },
+            downed: false,
+            dead: false,
+            weapon: "ak47",
+        } as never,
+    );
+    loop.decide(0, obs, undefined, fallback);
+
+    expect(offered[0]).toEqual(availableSkills(obs));
+    expect(offered[0]).not.toContain("revive");
+    expect(blocks[0]).toContain(`[can do: ${offered[0].join(", ")}]`);
+});

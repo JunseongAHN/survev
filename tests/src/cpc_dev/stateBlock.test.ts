@@ -83,3 +83,13 @@ test("an empty topic is omitted rather than printed empty", () => {
     expect(block).not.toMatch(/\[shots heard: \]/);
     expect(block).not.toContain("[point:"); // no objective in this episode
 });
+
+test("the skills that can run now are listed, and omitted when not given", () => {
+    const episode = new CpcEpisode({ seed: "cpc-state-block", scripted: "idle", controlled: ["team-a-0"] });
+    const obs = episode.reset().obs["team-a-0"];
+    episode.close();
+    expect(buildStateBlock(obs, { agentId: "team-a-0", t: 0, canDo: ["loot", "move_to"] }))
+        .toContain("[can do: loot, move_to]");
+    expect(buildStateBlock(obs, { agentId: "team-a-0", t: 0 })).not.toContain("[can do:");
+    expect(buildStateBlock(obs, { agentId: "team-a-0", t: 0, canDo: [] })).not.toContain("[can do:");
+});

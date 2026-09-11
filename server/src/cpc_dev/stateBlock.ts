@@ -41,6 +41,8 @@ export interface StateBlockOptions {
     currentSkill?: { skill: string; done: boolean; failed?: string } | null;
     /** most recent chat lines, oldest first: `["Kim: 밀자"]` */
     chat?: string[];
+    /** the skills the planner's grammar accepts this turn; listed so the model is not steering against it */
+    canDo?: readonly string[];
 }
 
 /**
@@ -114,6 +116,8 @@ export function buildStateBlock(obs: AgentObservation, options: StateBlockOption
     if (obs.gas.mode !== 0) {
         lines.push(`[gas: closing to r=${round(obs.gas.rad_new)} at ${bearing(me.pos, obs.gas.pos_new)}]`);
     }
+
+    if (options.canDo?.length) lines.push(`[can do: ${options.canDo.join(", ")}]`);
 
     if (options.currentSkill) {
         const { skill, done, failed } = options.currentSkill;

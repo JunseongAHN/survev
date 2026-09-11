@@ -20,7 +20,8 @@
 import type { AgentObservation } from "./observation.ts";
 import type { PlannerReply } from "./plannerClient.ts";
 import type { SkillChoice } from "./scriptedPolicy.ts";
-import type { SkillStatus } from "./skills.ts";
+import { availableSkills } from "./skillMask.ts";
+import type { SkillName, SkillStatus } from "./skills.ts";
 import type { SkillRequest } from "./skillWire.ts";
 import { buildStateBlock } from "./stateBlock.ts";
 
@@ -45,11 +46,14 @@ export interface PlannerEvent {
     latencyMs?: number;
     error?: string;
     block?: string;
+    /** the skills the grammar offered on this question */
+    skills?: string[];
 }
 
 export interface PlannerLoopOptions {
     agentId: string;
-    ask: (block: string) => Promise<PlannerReply>;
+    /** `skills` is what can run now; the caller builds the grammar from it so nothing else can be chosen */
+    ask: (block: string, skills: readonly SkillName[]) => Promise<PlannerReply>;
     /** wire decision -> engine params; throws when the decision cannot run (e.g. target not in view) */
     resolve: (request: SkillRequest) => SkillChoice;
     onEvent?: (event: PlannerEvent) => void;
@@ -181,18 +185,20 @@ export class PlannerLoop {
 
     private ask(t: number, obs: AgentObservation, reason: InterruptReason, status: SkillStatus | undefined): void {
         const current = this.commitment ?? undefined;
+        const skills = availableSkills(obs);
         const block = buildStateBlock(obs, {
             agentId: this.options.agentId,
             t,
             currentSkill: current
                 ? { skill: current.choice.skill, done: !!status?.done, failed: status?.failed }
                 : null,
+            canDo: skills,
         });
         this.asked = true;
         this.inFlight = true;
-        this.emit({ t, kind: "asked", reason, block });
+        this.emit({ t, kind: "asked", reason, block, skills: [...skills] });
         this.options
-            .ask(block)
+            .ask(block, skills)
             .catch((err: unknown): PlannerReply => ({ error: String(err), latencyMs: 0 }))
             .then((reply) => {
                 this.pending = { reply, reason };

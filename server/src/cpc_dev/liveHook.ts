@@ -209,12 +209,20 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
         enemies.forEach((bot, i) => agentIdOf.set(bot, `team-b-${i}`));
         if (config.plannerUrl) {
             const byId = new Map([...agentIdOf].map(([p, id]) => [id, p] as const));
-            const grammar = buildSkillGrammar({ agentIds: [...byId.keys()] });
+            const agentIds = [...byId.keys()];
             const systemPrompt = plannerSystemPrompt(config.sayLanguage);
             const url = config.plannerUrl;
             planner = new PlannerLoop({
                 agentId: "team-a-0",
-                ask: (block) => askPlanner({ url, systemPrompt, block, grammar, timeoutMs: config.plannerTimeoutMs }),
+                ask: (block, skills) =>
+                    askPlanner({
+                        url,
+                        systemPrompt,
+                        block,
+                        // only what can run now: a skill that must not be chosen cannot be generated
+                        grammar: buildSkillGrammar({ agentIds, skills }),
+                        timeoutMs: config.plannerTimeoutMs,
+                    }),
                 resolve: (request) =>
                     resolveSkillRequest(request, {
                         playerOf: (id) => {
