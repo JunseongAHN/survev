@@ -16,6 +16,7 @@ import { Config } from "../config.ts";
 import type { CpcAction } from "./applyCpcAction.ts";
 import { defaultScenarioSeed } from "./createScenarioGame.ts";
 import { CpcEpisode, type ObsMessage } from "./episode.ts";
+import { coverDensityFrom } from "./scenarios/coverLayout.ts";
 import type { ScriptedPolicyName } from "./scriptedPolicy.ts";
 import { seededRand } from "./seededRand.ts";
 
@@ -86,6 +87,15 @@ async function main(): Promise<void> {
     const ticks = readNumber("ticks", 10);
     const seed = readOption("seed") ?? defaultScenarioSeed;
     const scripted = (readOption("scripted") ?? "chaser") as ScriptedPolicyName;
+    const readJson = (name: string) => {
+        const raw = readOption(name);
+        if (!raw) return undefined;
+        try {
+            return JSON.parse(raw);
+        } catch (err) {
+            throw new Error(`--${name} is not valid JSON: ${(err as Error).message}`);
+        }
+    };
     const out = resolve(readOption("out") ?? ".tmp/cpc_dev/episode.jsonl");
 
     // `random` drives team-a from here; anything else lets the server script all four
@@ -93,6 +103,9 @@ async function main(): Promise<void> {
     const episode = new CpcEpisode({
         seed,
         timeLimit: seconds,
+        cover: coverDensityFrom(readOption("cover"), "--cover"),
+        scriptedOptions: readJson("scripted-options"),
+        scriptedOptionsByTeam: readJson("scripted-options-by-team"),
         controlled,
         scripted: policy === "random" ? scripted : (policy as ScriptedPolicyName),
     });

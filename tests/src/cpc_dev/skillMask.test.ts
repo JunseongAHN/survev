@@ -31,6 +31,7 @@ const enemy = (over: Partial<AgentObservation["players"][number]>): AgentObserva
     downed: false,
     dead: false,
     weapon: "ak47",
+    los_blocked: false,
     ...over,
 });
 
@@ -104,4 +105,29 @@ test("a downed enemy can be finished but not retreated from", () => {
     const skills = availableSkills(obs);
     expect(skills).toContain("engage");
     expect(skills).not.toContain("retreat");
+});
+
+test("healing in the open under fire is not offered; behind cover it is", () => {
+    const hurt = clone(armed);
+    hurt.self.hp = 40;
+    hurt.self.inventory.bandage = 2;
+    expect(availableSkills(hurt)).toContain("heal");
+
+    // an armed enemy with a clear line: eight seconds standing still is a gift
+    hurt.players.push(enemy({ dist: 19, los_blocked: false }));
+    expect(availableSkills(hurt)).not.toContain("heal");
+
+    // the same enemy, line broken by a wall: healing is the right call again
+    hurt.players[0].los_blocked = true;
+    expect(availableSkills(hurt)).toContain("heal");
+});
+
+test("an enemy that cannot shoot does not stop a heal", () => {
+    for (const other of [enemy({ dist: 8, weapon: "fists" }), enemy({ dist: 8, downed: true })]) {
+        const hurt = clone(armed);
+        hurt.self.hp = 40;
+        hurt.self.inventory.bandage = 2;
+        hurt.players.push(other);
+        expect(availableSkills(hurt), JSON.stringify(other)).toContain("heal");
+    }
 });

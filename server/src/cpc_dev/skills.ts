@@ -21,6 +21,7 @@
 
 import { GameConfig } from "../../../shared/gameConfig.ts";
 import { v2, type Vec2 } from "../../../shared/utils/v2.ts";
+import type { SightMemory } from "./botVision.ts";
 import type { Game } from "../game/game.ts";
 import type { Player } from "../game/objects/player.ts";
 import type { CpcAction } from "./applyCpcAction.ts";
@@ -65,6 +66,8 @@ export interface SkillContext {
     rand?: () => number;
     /** game time at which each agent's current fire-range contact began, by player id */
     contactSince?: Map<number, number>;
+    /** per-episode sight memory for the scripted bots; see `botVision.ts` */
+    sightMemory?: SightMemory;
     /** held noise samples per agent, so aim and path wobble at decision rate and not at tick rate */
     noise?: Map<number, HeldNoise>;
 }
@@ -85,7 +88,10 @@ export interface SkillParams {
     /** no `type` means "whatever I need next": a gun, then ammo for it */
     loot: { type?: string };
     heal: { item?: string };
-    engage: { target: Player; style?: "push" | "hold_angle" | "trade" };
+    // no stance: `push` / `hold_angle` / `trade` were offered for a while and never read here, and
+    // three reward designs over nine training runs could not make a controller play them apart in a
+    // five-second fight. The planner now chooses between fighting and breaking off, which it can.
+    engage: { target: Player };
     retreat: { awayFrom?: Player; distance?: number };
     revive: { target: Player };
 }

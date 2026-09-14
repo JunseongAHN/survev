@@ -22,6 +22,7 @@
  *   CPC_SCRIPTED_OPTIONS={json}     enemy strength, e.g. {"aimNoiseDeg":10,"reactionDelay":0.5}
  *   CPC_HUMANIZATION={json}         CPC motor constraints, same three keys plus pathJitterDeg
  *   CPC_OBJECTIVE=race|none         shared capture point (default none)
+ *   CPC_COVER=none|sparse|default|dense  bullet-stopping cover between the duos (default none)
  *   CPC_SEED=...                    loot layout / spawn geometry (default the scenario default)
  *   CPC_PLANNER_URL=http://...      System 2 (llama-server); unset = scripted brain
  *   CPC_SAY_LANG=ko|en              language of the planner's chat lines (default ko)
@@ -36,11 +37,13 @@ import type { Game } from "../game/game.ts";
 import type { Player } from "../game/objects/player.ts";
 import { applyCpcAction } from "./applyCpcAction.ts";
 import { normalizeSeed } from "./createScenarioGame.ts";
+import { buildingTargets, coverTargets } from "./namedTargets.ts";
 import { type ObjectiveOptions, RaceObjective } from "./objective.ts";
 import { type AgentObservation, extractAgentObservation, type ObservationIds } from "./observation.ts";
 import { askPlanner } from "./plannerClient.ts";
 import { type PlannerEvent, PlannerLoop } from "./plannerLoop.ts";
 import { plannerSystemPrompt, type SayLanguage } from "./plannerPrompt.ts";
+import { applyCoverLayout, type CoverDensity, coverDensityFrom, createCoverLayout } from "./scenarios/coverLayout.ts";
 import {
     scriptedAction,
     type ScriptedContext,
@@ -49,6 +52,7 @@ import {
     selectSkill,
     type SkillChoice,
 } from "./scriptedPolicy.ts";
+import type { SightMemory } from "./botVision.ts";
 import { seededRand } from "./seededRand.ts";
 import { buildSkillGrammar } from "./skillGrammar.ts";
 import { type HeldNoise, runSkill, type SkillOptions, type SkillStatus, weaponInputs } from "./skills.ts";
@@ -68,6 +72,7 @@ interface LiveConfig {
     scriptedOptions: ScriptedOptions;
     humanization: SkillOptions;
     objective: ObjectiveOptions;
+    cover: CoverDensity;
     seed: string;
     log?: string;
     plannerUrl?: string;
@@ -98,6 +103,7 @@ export function liveConfigFromEnv(env: NodeJS.ProcessEnv = process.env): LiveCon
         scriptedOptions: readJson<ScriptedOptions>(env.CPC_SCRIPTED_OPTIONS, "CPC_SCRIPTED_OPTIONS") ?? {},
         humanization: readJson<SkillOptions>(env.CPC_HUMANIZATION, "CPC_HUMANIZATION") ?? {},
         objective,
+        cover: coverDensityFrom(env.CPC_COVER, "CPC_COVER"),
         seed: env.CPC_SEED ?? "cpc-live-seed-0",
         log: env.CPC_LOG,
         plannerUrl: env.CPC_PLANNER_URL || undefined,
@@ -132,6 +138,7 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
     const seed = normalizeSeed(config.seed) ?? 0;
     const rand = seededRand(seed, skillStream);
     const contactSince = new Map<number, number>();
+    const sightMemory: SightMemory = new Map();
     // the CPC runs its skill every tick, so its aim/path noise has to be held per decision or
     // the character visibly shakes; the scripted enemies decide every 0.1 s and keep the old path
     const skillNoise = new Map<number, HeldNoise>();
@@ -177,6 +184,17 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
     let lastLog = -1;
 
     const centre = v2.create(game.map.width / 2, game.map.height / 2);
+    // cover goes in now, not in setUp: the client receives the map objects when it joins, and it
+    // draws from its own stream so a seed's kits and spawns stay exactly where they were
+    const coverPieces = createCoverLayout(
+        { x: centre.x - 64, y: centre.y - 64, width: 128, height: 128 },
+        seed,
+        config.cover,
+    );
+    applyCoverLayout(game, coverPieces);
+    if (coverPieces.length) {
+        console.log(`[cpc:cover] ${config.cover}: ${coverPieces.length} pieces around ${centre.x},${centre.y}`);
+    }
     /** Human and CPC west of centre, the enemy duo east, 32 u out — the fixed field layout. */
     const spawnAt = (side: 1 | -1, index: 0 | 1) =>
         v2.create(centre.x + side * 32, centre.y + (index === 0 ? -6.4 : 6.4));
@@ -223,13 +241,20 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
             const url = config.plannerUrl;
             planner = new PlannerLoop({
                 agentId: "team-a-0",
-                ask: (block, skills) =>
+                ask: (block, skills, obs) =>
                     askPlanner({
                         url,
                         systemPrompt,
                         block,
-                        // only what can run now: a skill that must not be chosen cannot be generated
-                        grammar: buildSkillGrammar({ agentIds, skills }),
+                        // only what can run now, and only the places in view: a skill that must not
+                        // be chosen and a spot the agent cannot see cannot be generated
+                        grammar: buildSkillGrammar({
+                            agentIds,
+                            skills,
+                            covers: coverTargets(obs).map((target) => target.name),
+                            buildings: buildingTargets(obs).map((target) => target.name),
+                            point: !!obs.objective,
+                        }),
                         timeoutMs: config.plannerTimeoutMs,
                     }),
                 resolve: (request) =>
@@ -321,6 +346,7 @@ export function attachCpcLive(game: Game, config: LiveConfig = liveConfigFromEnv
             t: now(),
             rand,
             contactSince,
+            sightMemory,
             noise: skillNoise,
             objective: objective ? { pos: objective.current.pos, radius: objective.radius } : undefined,
         };

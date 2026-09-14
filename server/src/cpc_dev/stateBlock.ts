@@ -16,6 +16,7 @@
  */
 
 import { v2, type Vec2 } from "../../../shared/utils/v2.ts";
+import { buildingTargets, coverTargets } from "./namedTargets.ts";
 import type { AgentObservation } from "./observation.ts";
 
 const compass = ["E", "NE", "N", "NW", "W", "SW", "S", "SE"] as const;
@@ -100,13 +101,23 @@ export function buildStateBlock(obs: AgentObservation, options: StateBlockOption
         lines.push(`[loot: ${nearby.join(", ")}]`);
     }
 
-    if (obs.obstacles.length) {
-        const cover = obs.obstacles
-            .filter((o) => o.collidable)
-            .sort((a, b) => a.dist - b.dist)
-            .slice(0, 4)
-            .map((o) => `${o.type} ${round(o.dist)}m ${bearing(me.pos, o.pos)}`);
-        if (cover.length) lines.push(`[cover: ${cover.join(", ")}]`);
+    // named, because a decision may say "hold c2": the same helper feeds the grammar and the resolver
+    const cover = coverTargets(obs);
+    if (cover.length) {
+        lines.push(
+            `[cover: ${
+                cover.map((c) => `${c.name} ${c.label} ${round(c.dist)}m ${bearing(me.pos, c.pos)}`).join(", ")
+            }]`,
+        );
+    }
+
+    const buildings = buildingTargets(obs);
+    if (buildings.length) {
+        lines.push(
+            `[buildings: ${
+                buildings.map((b) => `${b.name} ${b.label} ${round(b.dist)}m ${bearing(me.pos, b.pos)}`).join(", ")
+            }]`,
+        );
     }
 
     if (obs.objective) {

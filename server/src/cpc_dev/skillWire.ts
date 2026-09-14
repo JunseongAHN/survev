@@ -12,6 +12,7 @@
 
 import { v2, type Vec2 } from "../../../shared/utils/v2.ts";
 import type { Player } from "../game/objects/player.ts";
+import { namedTargetPos } from "./namedTargets.ts";
 import type { AgentObservation } from "./observation.ts";
 import type { SkillChoice } from "./scriptedPolicy.ts";
 import type { SkillName } from "./skills.ts";
@@ -69,6 +70,11 @@ export function namedPosition(obs: AgentObservation, to: string): Vec2 {
         if (!pile) throw new Error(`move_to.params.to: no ${type} in view`);
         return v2.copy(pile.pos);
     }
+    const place = namedTargetPos(obs, to);
+    if (place) return v2.copy(place);
+    if (to.startsWith("cover:") || to.startsWith("building:")) {
+        throw new Error(`move_to.params.to: ${to} is not in view`);
+    }
     const mate = obs.teammates.find((t) => t.id === to);
     if (mate) return v2.copy(mate.pos);
     const enemy = obs.players.find((p) => p.id === to);
@@ -108,13 +114,8 @@ export function resolveSkillRequest(request: SkillRequest, resolver: SkillResolv
             return { skill: "loot", params: { type: wireString(params.type, "loot.params.type") } };
         case "heal":
             return { skill: "heal", params: { item: wireString(params.item, "heal.params.item") } };
-        case "engage": {
-            const style = wireString(params.style, "engage.params.style");
-            if (style !== undefined && style !== "push" && style !== "hold_angle" && style !== "trade") {
-                throw new Error(`engage.params.style must be push | hold_angle | trade, got ${style}`);
-            }
-            return { skill: "engage", params: { target: at("target"), style } };
-        }
+        case "engage":
+            return { skill: "engage", params: { target: at("target") } };
         case "retreat":
             return {
                 skill: "retreat",

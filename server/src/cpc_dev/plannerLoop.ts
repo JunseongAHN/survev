@@ -53,7 +53,8 @@ export interface PlannerEvent {
 export interface PlannerLoopOptions {
     agentId: string;
     /** `skills` is what can run now; the caller builds the grammar from it so nothing else can be chosen */
-    ask: (block: string, skills: readonly SkillName[]) => Promise<PlannerReply>;
+    /** the observation comes along so the grammar can offer exactly the places in view */
+    ask: (block: string, skills: readonly SkillName[], obs: AgentObservation) => Promise<PlannerReply>;
     /** wire decision -> engine params; throws when the decision cannot run (e.g. target not in view) */
     resolve: (request: SkillRequest) => SkillChoice;
     onEvent?: (event: PlannerEvent) => void;
@@ -198,7 +199,7 @@ export class PlannerLoop {
         this.inFlight = true;
         this.emit({ t, kind: "asked", reason, block, skills: [...skills] });
         this.options
-            .ask(block, skills)
+            .ask(block, skills, obs)
             .catch((err: unknown): PlannerReply => ({ error: String(err), latencyMs: 0 }))
             .then((reply) => {
                 this.pending = { reply, reason };

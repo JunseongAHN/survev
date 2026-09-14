@@ -1,8 +1,12 @@
-import { GameObjectDefs } from "../../../shared/defs/register.ts";
 import type { GunDef } from "../../../shared/defs/gameObjects/gunDefs.ts";
+import { GameObjectDefs } from "../../../shared/defs/register.ts";
+import { GameConfig } from "../../../shared/gameConfig.ts";
 import { ObjectType } from "../../../shared/net/objectSerializeFns.ts";
+import { collider } from "../../../shared/utils/collider.ts";
+import { util } from "../../../shared/utils/util.ts";
 import { v2, type Vec2 } from "../../../shared/utils/v2.ts";
 import type { Game } from "../game/game.ts";
+import type { Building } from "../game/objects/building.ts";
 import type { DeadBody } from "../game/objects/deadBody.ts";
 import type { Loot } from "../game/objects/loot.ts";
 import type { Obstacle } from "../game/objects/obstacle.ts";
@@ -82,8 +86,14 @@ export interface AgentObservation {
         downed: boolean;
         dead: boolean;
         weapon: string;
+        /** a shot at it would hit something else first */
+        los_blocked: boolean;
     }>;
     loot: Array<{ id: number; type: string; pos: Vec2; dist: number; count: number }>;
+    /** distance to the first bullet-stopper in each of `rayCount` directions, E first, counter-clockwise */
+    rays: number[];
+    /** whole structures in view; their walls also arrive as obstacles, this is the thing to name */
+    buildings: Array<{ id: number; type: string; pos: Vec2; dist: number }>;
     obstacles: Array<{
         id: number;
         type: string;
@@ -92,6 +102,10 @@ export interface AgentObservation {
         collidable: boolean;
         height: number;
         scale: number;
+        /** it sits on the line between this agent and the nearest standing enemy */
+        blocks_los: boolean;
+        /** 1 when stepping behind it would break that line, 0 otherwise */
+        cover_score: number;
     }>;
     bullets: Array<{ pos: Vec2; dir: Vec2; player_id: number }>;
     dead_bodies: Array<{ pos: Vec2; dist: number }>;
@@ -112,6 +126,8 @@ export const observationAllowlist = {
         "players",
         "loot",
         "obstacles",
+        "buildings",
+        "rays",
         "bullets",
         "dead_bodies",
         "gas",
@@ -142,9 +158,10 @@ export const observationAllowlist = {
     "self.weapons": ["slot", "type", "ammo"],
     "self.inventory": [...observedInventory],
     teammates: ["id", "pos", "dist", "hp", "downed", "dead"],
-    players: ["id", "team", "pos", "dist", "dir", "downed", "dead", "weapon"],
+    players: ["id", "team", "pos", "dist", "dir", "downed", "dead", "weapon", "los_blocked"],
     loot: ["id", "type", "pos", "dist", "count"],
-    obstacles: ["id", "type", "pos", "dist", "collidable", "height", "scale"],
+    obstacles: ["id", "type", "pos", "dist", "collidable", "height", "scale", "blocks_los", "cover_score"],
+    buildings: ["id", "type", "pos", "dist"],
     bullets: ["pos", "dir", "player_id"],
     dead_bodies: ["pos", "dist"],
     gas: ["mode", "rad", "pos", "rad_new", "pos_new"],
@@ -171,6 +188,44 @@ function vec(v: Vec2): Vec2 {
  * Teammates come from group status (always known); enemy HP is never included.
  * `shotsHeard` is supplied by the caller, which owns the fire events of the step (see `hearShot`).
  */
+/** How many directions the range readings cover, and how far each one looks (world units). */
+export const rayCount = 16;
+export const rayRange = 48;
+
+/**
+ * The first thing that would stop a bullet between two points, by the engine's own rule.
+ *
+ * `bullet.ts` keeps travelling through anything that is dead, on another layer or shorter than
+ * `GameConfig.bullet.height`, and then decides with `hit = col.collidable` — so a bush (collidable
+ * false) hides a player from the eye but never from a shot. Line of sight here means exactly that:
+ * what the shot would do, not what the eye can see.
+ */
+export function firstBlocker(
+    game: Game,
+    from: Vec2,
+    to: Vec2,
+    layer: number,
+): { obstacle: Obstacle; dist: number } | undefined {
+    let best: { obstacle: Obstacle; dist: number } | undefined;
+    for (const obj of game.grid.intersectLineSegment(from, to)) {
+        if (obj.__type !== ObjectType.Obstacle) continue;
+        const obstacle = obj as Obstacle;
+        if (
+            obstacle.dead
+            || !obstacle.collidable
+            || obstacle.height < GameConfig.bullet.height
+            || !util.sameLayer(obstacle.layer, layer)
+        ) {
+            continue;
+        }
+        const hit = collider.intersectSegment(obstacle.collider, from, to);
+        if (!hit) continue;
+        const dist = v2.distance(from, hit.point);
+        if (!best || dist < best.dist) best = { obstacle, dist };
+    }
+    return best;
+}
+
 export function extractAgentObservation(
     game: Game,
     player: Player,
@@ -187,6 +242,8 @@ export function extractAgentObservation(
     const players: AgentObservation["players"] = [];
     const loot: AgentObservation["loot"] = [];
     const obstacles: AgentObservation["obstacles"] = [];
+    const obstacleObjects: Obstacle[] = [];
+    const buildings: AgentObservation["buildings"] = [];
     const deadBodies: AgentObservation["dead_bodies"] = [];
 
     for (const mate of game.playerBarn.players) {
@@ -216,6 +273,7 @@ export function extractAgentObservation(
                     downed: other.downed,
                     dead: other.dead,
                     weapon: other.activeWeapon,
+                    los_blocked: false,
                 });
                 break;
             }
@@ -232,6 +290,7 @@ export function extractAgentObservation(
             }
             case ObjectType.Obstacle: {
                 const obstacle = obj as Obstacle;
+                obstacleObjects.push(obstacle);
                 obstacles.push({
                     id: obstacle.__id,
                     type: obstacle.type,
@@ -240,6 +299,18 @@ export function extractAgentObservation(
                     collidable: obstacle.collidable,
                     height: obstacle.height,
                     scale: obstacle.scale,
+                    blocks_los: false,
+                    cover_score: 0,
+                });
+                break;
+            }
+            case ObjectType.Building: {
+                const building = obj as Building;
+                buildings.push({
+                    id: building.__id,
+                    type: building.type,
+                    pos: vec(building.pos),
+                    dist: v2.distance(player.pos, building.pos),
                 });
                 break;
             }
@@ -266,6 +337,30 @@ export function extractAgentObservation(
     for (const item of observedInventory) inventory[item] = items[item] ?? 0;
 
     const gas = game.gas;
+    // what a shot would actually do, on the agent's own information: the line to each enemy, which
+    // obstacle sits on the line to the nearest one, and how far each direction is clear
+    for (const entry of players) {
+        entry.los_blocked = !!firstBlocker(game, player.pos, entry.pos, player.layer);
+    }
+    const nearestEnemy = players.filter((p) => !p.dead).sort((a, b) => a.dist - b.dist)[0];
+    if (nearestEnemy) {
+        for (const [index, obstacle] of obstacleObjects.entries()) {
+            const entry = obstacles[index];
+            if (!entry.collidable || obstacle.height < GameConfig.bullet.height) continue;
+            entry.blocks_los = !!collider.intersectSegment(obstacle.collider, player.pos, nearestEnemy.pos);
+            // stepping to the far side of it, 2 u out: does the line break there?
+            const away = v2.normalizeSafe(v2.sub(obstacle.pos, nearestEnemy.pos), v2.create(1, 0));
+            const behind = v2.add(obstacle.pos, v2.mul(away, 2));
+            entry.cover_score = firstBlocker(game, behind, nearestEnemy.pos, player.layer) ? 1 : 0;
+        }
+    }
+    const rays: number[] = [];
+    for (let i = 0; i < rayCount; i++) {
+        const angle = (i * 2 * Math.PI) / rayCount;
+        const end = v2.add(player.pos, v2.create(Math.cos(angle) * rayRange, Math.sin(angle) * rayRange));
+        rays.push(firstBlocker(game, player.pos, end, player.layer)?.dist ?? rayRange);
+    }
+
     return {
         self: {
             id: ids.agentIdOf(player),
@@ -290,6 +385,8 @@ export function extractAgentObservation(
         players,
         loot,
         obstacles,
+        buildings,
+        rays,
         bullets,
         dead_bodies: deadBodies,
         gas: {

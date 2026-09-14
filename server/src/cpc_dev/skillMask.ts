@@ -36,13 +36,18 @@ export function availableSkills(obs: AgentObservation): SkillName[] {
     const me = obs.self;
     const enemies = obs.players.filter((p) => !p.dead);
     const threatClose = enemies.some((p) => isThreat(p) && p.dist <= reviveSafeDist);
+    // healing locks the agent in place for seconds; an armed enemy with a clear line makes that a
+    // gift. The line is the engine's own bullet rule, so stepping behind cover makes healing
+    // available again — which is the behaviour we want the planner to learn to want.
+    const exposedToFire = enemies.some((p) => isThreat(p) && !p.los_blocked);
     const out: SkillName[] = [];
 
     // there is always somewhere to go: the race point, the teammate, a listed item
     out.push("move_to");
     if (obs.teammates.some((m) => !m.dead && !m.downed)) out.push("follow");
     if (lootWouldAct(me)) out.push("loot");
-    if (me.hp < 100 && healItems.some((item) => (me.inventory[item] ?? 0) > 0)) out.push("heal");
+    const canHeal = me.hp < 100 && healItems.some((item) => (me.inventory[item] ?? 0) > 0);
+    if (canHeal && !exposedToFire) out.push("heal");
     // a downed enemy can still be finished, but there is nothing to back away from
     if (enemies.length) out.push("engage");
     if (enemies.some((p) => !p.downed)) out.push("retreat");

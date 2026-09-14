@@ -80,3 +80,28 @@ test("loot and heal take no parameters", () => {
         expect(rule).toBe(`params-${skill} ::= "{" ws "}"`);
     }
 });
+
+test("a place the agent cannot see is not in the grammar", () => {
+    const bare = buildSkillGrammar({ agentIds: ["team-a-0", "team-b-0"], skills: ["move_to"] });
+    expect(bare).not.toContain("cover-target");
+    expect(bare).not.toContain("building-target");
+
+    const named = buildSkillGrammar({
+        agentIds: ["team-a-0", "team-b-0"],
+        skills: ["move_to"],
+        covers: ["c1", "c2"],
+        buildings: ["b1"],
+    });
+    expect(named).toContain("cover-target ::= \"\\\"cover:c1\\\"\" | \"\\\"cover:c2\\\"\"");
+    expect(named).toContain("building-target ::= \"\\\"building:b1\\\"\"");
+    expect(named).toContain("cover-target");
+});
+
+test("with no race point, `point` cannot be generated", () => {
+    const withPoint = buildSkillGrammar({ agentIds: ["team-a-0"], skills: ["move_to"] });
+    expect(withPoint).toContain("\"\\\"point\\\"\"");
+
+    const without = buildSkillGrammar({ agentIds: ["team-a-0"], skills: ["move_to"], point: false });
+    expect(without).not.toContain("\"\\\"point\\\"\"");
+    expect(without).toContain("loot-target");
+});

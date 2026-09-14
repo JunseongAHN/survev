@@ -26,7 +26,7 @@ const paramRules: Record<SkillName, string> = {
     // name `{"type": "ammo"}`, which is not an item, so the grammar offers no field to get wrong
     loot: `"{" ws "}"`,
     heal: `"{" ws "}"`,
-    engage: `"{" ws "\\"target\\"" ws ":" ws agent ( ws "," ws "\\"style\\"" ws ":" ws style )? ws "}"`,
+    engage: `"{" ws "\\"target\\"" ws ":" ws agent ws "}"`,
     retreat: `"{" ( ws "\\"away_from\\"" ws ":" ws agent ( ws "," ws "\\"distance\\"" ws ":" ws number )? )? ws "}"`,
     revive: `"{" ws "\\"target\\"" ws ":" ws agent ws "}"`,
 };
@@ -40,6 +40,12 @@ export interface GrammarOptions {
     commitMs?: { min: number; max: number };
     /** maximum characters in `say`; the plan wants short, situational Korean */
     sayMaxChars?: number;
+    /** cover names in view this turn (`c1`, ...); omitted names cannot be generated */
+    covers?: readonly string[];
+    /** building names in view this turn (`b1`, ...) */
+    buildings?: readonly string[];
+    /** whether a race point exists; `false` removes `"point"` so it cannot be invented */
+    point?: boolean;
 }
 
 const allSkills = Object.keys(paramRules) as SkillName[];
@@ -61,6 +67,20 @@ export function buildSkillGrammar(options: GrammarOptions): string {
     if (!skills.length) throw new Error("at least one skill has to be offered");
     if (!options.agentIds.length) throw new Error("agentIds is required: the planner names targets by id");
     const sayMax = options.sayMaxChars ?? 20;
+
+    // a place the agent cannot see must not be expressible: "point" was always on offer, and the
+    // planner duly sent the CPC to a race point that did not exist
+    const covers = options.covers ?? [];
+    const buildings = options.buildings ?? [];
+    const targetAlternatives: string[] = [];
+    if (options.point ?? true) targetAlternatives.push(`"\\"point\\""`);
+    targetAlternatives.push("agent", "loot-target");
+    if (covers.length) targetAlternatives.push("cover-target");
+    if (buildings.length) targetAlternatives.push("building-target");
+    const placeRules = [
+        covers.length ? `\ncover-target ::= ${quoted(covers.map((c) => `cover:${c}`))}` : "",
+        buildings.length ? `\nbuilding-target ::= ${quoted(buildings.map((b) => `building:${b}`))}` : "",
+    ].join("");
 
     // one alternative per skill, each pinned to its own params: the model cannot pick `engage` and
     // then hand over `pos`, which a schema-per-field grammar would allow
@@ -85,9 +105,8 @@ say-text ::= "\\"" [^"\\\\\\n]{1,${sayMax}} "\\""
 ping ::= "\\"ping\\"" ws ":" ws ( vec | "null" )
 
 agent ::= ${quoted(options.agentIds)}
-target ::= "\\"point\\"" | agent | loot-target
-loot-target ::= "\\"loot:" [a-z0-9]{1,24} "\\""
-style ::= ${quoted(["push", "hold_angle", "trade"])}
+target ::= ${targetAlternatives.join(" | ")}
+loot-target ::= "\\"loot:" [a-z0-9]{1,24} "\\""${placeRules}
 vec ::= "{" ws "\\"x\\"" ws ":" ws number ws "," ws "\\"y\\"" ws ":" ws number ws "}"
 number ::= "-"? [0-9]+ ( "." [0-9]+ )?
 ws ::= [ \\t\\n]*

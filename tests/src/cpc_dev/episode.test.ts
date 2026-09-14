@@ -215,14 +215,15 @@ test("events carry agent ids and the time limit ends a quiet episode", () => {
 });
 
 test("race objective: seeded points, team-credited captures that move the point, and no end on elimination", () => {
-    const make = () => new CpcEpisode({
-        seed: "cpc-race-test",
-        scripted: "idle",
-        controlled: ["team-a-0", "team-a-1"],
-        objective: { mode: "race", radius: 4, minDist: 30, maxDist: 70 },
-        endOnElimination: false,
-        timeLimit: 20,
-    });
+    const make = () =>
+        new CpcEpisode({
+            seed: "cpc-race-test",
+            scripted: "idle",
+            controlled: ["team-a-0", "team-a-1"],
+            objective: { mode: "race", radius: 4, minDist: 30, maxDist: 70 },
+            endOnElimination: false,
+            timeLimit: 20,
+        });
     const episode = make();
     const first = episode.reset();
     const other = make().reset();
@@ -263,7 +264,8 @@ test("race objective: seeded points, team-credited captures that move the point,
     expect(captured).toBe(true);
 
     // no end on elimination: kill team-b outright, the episode keeps running to the time limit
-    const all = (episode as unknown as { players: Array<{ name: string; kill: (p: object) => void; dead: boolean }> }).players;
+    const all =
+        (episode as unknown as { players: Array<{ name: string; kill: (p: object) => void; dead: boolean }> }).players;
     for (const p of all) {
         if (p.name.startsWith("team-b")) p.kill({ damageType: 0, dir: v2.create(1, 0), source: undefined });
     }
@@ -526,8 +528,6 @@ test("bad skill requests are rejected with the field that was wrong", () => {
     expect(send({ skill: "move_to", params: {} })).toThrow(/move_to.params.pos must be \{x, y\}/);
     expect(send({ skill: "follow", params: {} })).toThrow(/needs params.target/);
     expect(send({ skill: "follow", params: { target: "team-z-9" } })).toThrow(/unknown agent/);
-    expect(send({ skill: "engage", params: { target: "team-b-0", style: "sprint" } }))
-        .toThrow(/style must be push \| hold_angle \| trade/);
     expect(send({ skill: "move_to", params: { pos: { x: 1, y: 2 }, arrive: "soon" } }))
         .toThrow(/arrive must be a finite number/);
     episode.close();

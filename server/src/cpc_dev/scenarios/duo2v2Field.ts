@@ -2,6 +2,7 @@ import { v2, type Vec2 } from "../../../../shared/utils/v2.ts";
 import type { Game } from "../../game/game.ts";
 import { normalizeSeed } from "../createScenarioGame.ts";
 import { seededRand } from "../seededRand.ts";
+import { applyCoverLayout, type CoverDensity, type CoverPiece, createCoverLayout } from "./coverLayout.ts";
 import {
     buildDuo2v2Scenario,
     type CpcAgentId,
@@ -39,6 +40,8 @@ export interface FieldSpawnLayout {
 
 export interface Duo2v2FieldOptions extends Omit<Duo2v2ScenarioOptions, "spawns"> {
     layout?: FieldLayout;
+    /** bullet-stopping cover between the duos; `none` (the default) keeps the open field */
+    cover?: CoverDensity;
     /**
      * Body skins per team so a spectator can tell the duos apart, the way 50v50 colours its factions
      * (`GameConfig.teamColors`): default team-a = "outfitBlueLeader" (blue), team-b = "outfitRed" (red).
@@ -55,6 +58,7 @@ export const defaultTeamOutfits: Record<CpcTeamId, string> = {
 export interface Duo2v2FieldScenario extends Duo2v2Scenario {
     loot: FieldLoot[];
     spawnLayout: FieldSpawnLayout;
+    cover: CoverPiece[];
 }
 
 interface KitItem {
@@ -144,7 +148,10 @@ export function createFieldLoot(region: ScenarioRegion, seed: number, spawnLayou
     if (spawnLayout && spawnLayout.layout !== "fixed") {
         const center = spawnLayout.center;
         const midA = v2.mul(v2.add(spawnLayout.spawns["team-a-0"], spawnLayout.spawns["team-a-1"]), 0.5);
-        const anchorA = v2.add(midA, v2.mul(v2.normalizeSafe(v2.sub(center, midA), v2.create(1, 0)), kitOffsetFromSpawn));
+        const anchorA = v2.add(
+            midA,
+            v2.mul(v2.normalizeSafe(v2.sub(center, midA), v2.create(1, 0)), kitOffsetFromSpawn),
+        );
         for (const item of teamKit) {
             const posA = v2.add(anchorA, scatter());
             loot.push({ ...item, pos: posA });
@@ -202,5 +209,8 @@ export function buildDuo2v2FieldScenario(
         game.lootBarn.addLoot(item.type, item.pos, 0, item.count, { source: "map" });
     }
 
-    return { ...scenario, loot, spawnLayout };
+    const cover = createCoverLayout(scenario.scenarioRegion, seed, options.cover ?? "none");
+    applyCoverLayout(game, cover);
+
+    return { ...scenario, loot, spawnLayout, cover };
 }

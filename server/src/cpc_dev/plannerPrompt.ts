@@ -16,11 +16,12 @@ export type SayLanguage = "ko" | "en";
 
 /** What the planner is told each skill does; params match `skillGrammar.ts`. */
 const skillLines = [
-    `- move_to: params {"to": "point" | AGENT_ID | "loot:ITEM"} - walk to the race point, a player, or a listed item`,
+    `- move_to: params {"to": "point" | AGENT_ID | "loot:ITEM" | "cover:cN" | "building:bN"} - walk to the race `
+    + `point, a player, a listed item, or a listed piece of cover or building`,
     `- follow: params {"target": AGENT_ID, "distance": N} - stay near a teammate`,
     `- loot: params {} - pick up a gun if you have none, or ammo if your gun is empty; does nothing otherwise`,
     `- heal: params {} - use a bandage or healthkit until hp is full`,
-    `- engage: params {"target": AGENT_ID, "style": "push"|"hold_angle"|"trade"} - fight an enemy`,
+    `- engage: params {"target": AGENT_ID} - fight an enemy`,
     `- retreat: params {"away_from": AGENT_ID, "distance": N} - back off from a threat`,
     `- revive: params {"target": AGENT_ID} - pick up a downed teammate`,
 ];
@@ -31,12 +32,14 @@ const chat = {
         rule: "an optional short Korean line to your human teammate, under 15 characters",
         engageExample: "북동쪽 하나",
         lootExample: "총 주울게",
+        coverExample: "벽 뒤로",
     },
     en: {
         placeholder: "SHORT_ENGLISH_OR_NULL",
         rule: "an optional short English line to your human teammate, under 20 characters",
         engageExample: "one NE",
         lootExample: "grabbing a gun",
+        coverExample: "behind the wall",
     },
 } as const;
 
@@ -68,7 +71,7 @@ Examples:
 [weapon: mp5 22/60 | scope 1xscope]
 [teammate team-a-1: 70hp, 9m W]
 [enemies seen: team-b-1 18m NE ak47]
--> {"skill": "engage", "params": {"target": "team-b-1", "style": "hold_angle"}, "commit_ms": 600, "say": "${c.engageExample}"}
+-> {"skill": "engage", "params": {"target": "team-b-1"}, "commit_ms": 600, "say": "${c.engageExample}"}
 
 [t=2s you=team-a-0 100hp]
 [weapon: fists (no gun) | scope 1xscope]

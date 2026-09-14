@@ -21,6 +21,14 @@ import { v2, type Vec2 } from "../../../shared/utils/v2.ts";
 import type { Player } from "../game/objects/player.ts";
 import type { CpcAction } from "./applyCpcAction.ts";
 import {
+    defaultPursuitMemory,
+    defaultSightRange,
+    lastKnown,
+    rememberSightings,
+    type Sighting,
+    type VisionOptions,
+} from "./botVision.ts";
+import {
     alive,
     fireRange,
     nearest,
@@ -43,7 +51,7 @@ export const reviveSafeDist = 25;
 
 export { fireRange };
 
-export interface ScriptedOptions extends SkillOptions {
+export interface ScriptedOptions extends SkillOptions, VisionOptions {
     /** racer only: it breaks off toward an enemy inside this distance; default `racerEngageDist` */
     engageDist?: number;
 }
@@ -63,7 +71,35 @@ export type SkillChoice = { [K in SkillName]: { skill: K; params: SkillParams[K]
  */
 export function selectSkill(ctx: ScriptedContext, me: Player, engageDist: number): SkillChoice | undefined {
     const enemies = ctx.players.filter((p) => p.groupId !== me.groupId && alive(p));
-    const enemy = nearest(me.pos, enemies, (p) => p.pos);
+    // What the bot may act on. `omniscient` is the pre-2026-09-14 behaviour, kept so old baselines
+    // can be reproduced: it chases enemies it cannot see, which made withdrawing impossible -- the
+    // nearest-enemy distance and the closing rate came out identical whether the controller was told
+    // to engage or to retreat.
+    let visible = enemies;
+    let trail: Sighting | undefined;
+    if (ctx.options?.vision !== "omniscient") {
+        if (!ctx.sightMemory) {
+            throw new Error("line-of-sight vision needs ctx.sightMemory (per-episode state)");
+        }
+        visible = rememberSightings(
+            ctx.sightMemory,
+            ctx.game,
+            me,
+            enemies,
+            ctx.t,
+            ctx.options?.sightRange ?? defaultSightRange,
+        );
+        if (visible.length === 0) {
+            trail = lastKnown(
+                ctx.sightMemory,
+                me,
+                enemies,
+                ctx.t,
+                ctx.options?.pursuitMemory ?? defaultPursuitMemory,
+            );
+        }
+    }
+    const enemy = nearest(me.pos, visible, (p) => p.pos);
     // the contact clock is read before anything else so it also counts time spent looting, which is
     // what makes `reactionDelay` a delay on *seeing* an enemy rather than on choosing to fight
     trackContact(ctx, me, enemy);
@@ -78,6 +114,11 @@ export function selectSkill(ctx: ScriptedContext, me: Player, engageDist: number
     if (enemy && enemy.dist <= engageDist) {
         return { skill: "engage", params: { target: enemy.item } };
     }
+    // it watched someone step behind a wall: walk to where they were, then give up. This is what
+    // makes breaking the line an actual escape rather than a cosmetic one.
+    if (!enemy && trail) {
+        return { skill: "move_to", params: { pos: trail.pos, arrive: 2 } };
+    }
     if (ctx.objective) {
         return {
             skill: "move_to",
@@ -91,6 +132,13 @@ export function selectSkill(ctx: ScriptedContext, me: Player, engageDist: number
     }
     if (enemy) {
         return { skill: "engage", params: { target: enemy.item } };
+    }
+    // Nothing seen and no trail left: walk to the middle of the play area. Without this a bot that
+    // has never had line of sight -- at spawn behind cover, or after someone successfully broke away
+    // -- would stand still, which deadlocks the scenario instead of restarting the fight.
+    const centre = ctx.game.gas?.currentPos;
+    if (centre) {
+        return { skill: "move_to", params: { pos: centre, arrive: 6 } };
     }
     return undefined;
 }

@@ -3,7 +3,12 @@ import { v2, type Vec2 } from "../../../shared/utils/v2.ts";
 import { Config } from "../config.ts";
 import type { Player } from "../game/objects/player.ts";
 import { applyCpcAction, type CpcAction } from "./applyCpcAction.ts";
-import { createScenarioGame, defaultScenarioMapSize, defaultScenarioSeed, normalizeSeed } from "./createScenarioGame.ts";
+import {
+    createScenarioGame,
+    defaultScenarioMapSize,
+    defaultScenarioSeed,
+    normalizeSeed,
+} from "./createScenarioGame.ts";
 import { attachEventTaps, type CpcEvent, type EventTaps } from "./eventTaps.ts";
 import { type CaptureEvent, type ObjectiveOptions, RaceObjective } from "./objective.ts";
 import {
@@ -13,14 +18,17 @@ import {
     type ObservationIds,
     type ShotHeard,
 } from "./observation.ts";
+import type { CoverDensity } from "./scenarios/coverLayout.ts";
 import { buildDuo2v2FieldScenario, type Duo2v2FieldScenario, type FieldLayout } from "./scenarios/duo2v2Field.ts";
 import {
+    scriptedAction,
     type ScriptedContext,
     type ScriptedOptions,
-    scriptedAction,
     type ScriptedPolicyName,
     type SkillChoice,
 } from "./scriptedPolicy.ts";
+import type { SightMemory } from "./botVision.ts";
+import { seededRand } from "./seededRand.ts";
 import {
     type HeldNoise,
     runSkill,
@@ -29,7 +37,6 @@ import {
     type SkillOptions,
     type SkillStatus,
 } from "./skills.ts";
-import { seededRand } from "./seededRand.ts";
 import { resolveSkillRequest, type SkillRequest } from "./skillWire.ts";
 
 export interface EpisodeOptions {
@@ -43,12 +50,22 @@ export interface EpisodeOptions {
     scripted?: ScriptedPolicyName;
     /** strength knobs of the scripted opponents (aim noise, reaction delay, racer engage distance); default exact */
     scriptedOptions?: ScriptedOptions;
+    /**
+     * Per-team overrides of `scriptedOptions`, keyed by team id (`{"team-b": {"aimNoiseDeg": 10}}`).
+     *
+     * A baseline is only a baseline if both sides meet the same opponent: a policy trained against
+     * weakened bots has to be compared with a scripted team facing those same weakened bots, not the
+     * exact ones. One shared options object cannot express that.
+     */
+    scriptedOptionsByTeam?: Record<string, ScriptedOptions>;
     /** motor constraints for the controlled agents' skills (aim noise, reaction delay, path jitter) */
     humanization?: SkillOptions;
     /** "armed" starts everyone with a loaded ak47 and reserve ammo (curriculum helper); default "fists" */
     loadout?: "fists" | "armed";
     /** "random" rotates the spawn axis and draws the spawn distance per seed (see `FieldLayout`); default "fixed" */
     layout?: FieldLayout;
+    /** bullet-stopping cover between the duos (see `coverLayout.ts`); default "none", the open field */
+    cover?: CoverDensity;
     /** shared objective; `{ mode: "race" }` turns on the moving capture point (see `objective.ts`); default none */
     objective?: ObjectiveOptions;
     /**
@@ -115,7 +132,9 @@ export interface EpisodeInfo {
     reason: "elimination" | "time_limit" | "controlled_dead" | null;
     metrics: Record<string, AgentMetrics> | null;
     /** race objective: the current point and the captures per team so far */
-    objective: { index: number; pos: { x: number; y: number }; radius: number; captures: Record<string, number> } | null;
+    objective:
+        | { index: number; pos: { x: number; y: number }; radius: number; captures: Record<string, number> }
+        | null;
     /**
      * Per controlled agent running a skill: what it is and whether it finished or could not run.
      * This is the interrupt half of the planner's loop — it is controller state, not world state,
@@ -141,7 +160,6 @@ export interface ObsMessage {
 export function isSkillRequest(action: ControlledAction): action is SkillRequest {
     return typeof (action as SkillRequest).skill === "string";
 }
-
 
 const tps = Config.gameTps;
 const netSyncEvery = Math.round(Config.gameTps / Config.netSyncTps);
@@ -182,6 +200,8 @@ export class CpcEpisode {
     private pendingCaptures: CaptureEvent[] = [];
     private scriptedRand: () => number = Math.random;
     private contactSince = new Map<number, number>();
+    /** what each scripted bot has seen, so losing sight can end a pursuit */
+    private sightMemory: SightMemory = new Map();
     /** the skill each controlled agent is currently committed to, already resolved to players */
     private currentSkill = new Map<string, SkillChoice>();
     private skillStatus = new Map<string, SkillStatus>();
@@ -205,9 +225,11 @@ export class CpcEpisode {
             controlled: options.controlled ?? ["team-a-0", "team-a-1"],
             scripted: options.scripted ?? "chaser",
             scriptedOptions: options.scriptedOptions ?? {},
+            scriptedOptionsByTeam: options.scriptedOptionsByTeam ?? {},
             humanization: options.humanization ?? {},
             loadout: options.loadout ?? "fists",
             layout: options.layout ?? "fixed",
+            cover: options.cover ?? "none",
             objective: options.objective ?? { mode: "none" },
             endOnElimination: options.endOnElimination ?? true,
         };
@@ -221,7 +243,12 @@ export class CpcEpisode {
         this.taps?.detach();
         const { game, seed, mapSize } = createScenarioGame({ seed: this.options.seed, mapSize: this.options.mapSize });
         this.game = game;
-        this.scenario = buildDuo2v2FieldScenario(game, { seed, mapSize, layout: this.options.layout });
+        this.scenario = buildDuo2v2FieldScenario(game, {
+            seed,
+            mapSize,
+            layout: this.options.layout,
+            cover: this.options.cover,
+        });
         this.players = this.scenario.players.map((p) => p.player);
         this.agentIdOf = new Map(this.scenario.players.map((p) => [p.player.__id, p.agentId]));
         this.teamOf = new Map(this.scenario.players.map((p) => [p.agentId, p.teamId]));
@@ -248,6 +275,7 @@ export class CpcEpisode {
         const rand = seededRand(normalizeSeed(seed) ?? 0, scriptedSeedStream);
         this.scriptedRand = () => rand();
         this.contactSince = new Map();
+        this.sightMemory = new Map();
         this.currentSkill = new Map();
         this.skillStatus = new Map();
         this.skillNoise = new Map();
@@ -299,12 +327,21 @@ export class CpcEpisode {
                     game: this.game,
                     players: this.players,
                     t: this.t,
-                    objective: this.objective ? { pos: this.objective.current.pos, radius: this.objective.radius } : undefined,
+                    objective: this.objective
+                        ? { pos: this.objective.current.pos, radius: this.objective.radius }
+                        : undefined,
                     options: this.options.scriptedOptions,
                     rand: this.scriptedRand,
                     contactSince: this.contactSince,
+                    sightMemory: this.sightMemory,
                 };
-                for (const bot of scripted) applyCpcAction(bot, scriptedAction(this.options.scripted, ctx, bot));
+                for (const bot of scripted) {
+                    // a team may be weakened on its own, so the context is built per bot
+                    const team = this.teamOf.get(this.agentIdOf.get(bot.__id)!);
+                    const options = (team ? this.options.scriptedOptionsByTeam[team] : undefined)
+                        ?? this.options.scriptedOptions;
+                    applyCpcAction(bot, scriptedAction(this.options.scripted, { ...ctx, options }, bot));
+                }
             }
             // System 1: a committed skill is re-evaluated every tick, not once per policy step, so
             // aim tracks a moving target and completion is noticed the tick it happens
@@ -342,6 +379,7 @@ export class CpcEpisode {
             options: this.options.humanization,
             rand: this.scriptedRand,
             contactSince: this.contactSince,
+            sightMemory: this.sightMemory,
             noise: this.skillNoise,
         };
         for (const [agentId, choice] of this.currentSkill) {
@@ -417,7 +455,9 @@ export class CpcEpisode {
             const captures = Object.entries(this.teamCaptures()).sort((a, b) => b[1] - a[1]);
             return captures.length > 1 && captures[0][1] === captures[1][1] ? null : captures[0][0];
         }
-        const alive = new Set(this.players.filter((p) => !p.dead).map((p) => this.teamOf.get(this.agentIdOf.get(p.__id)!)!));
+        const alive = new Set(
+            this.players.filter((p) => !p.dead).map((p) => this.teamOf.get(this.agentIdOf.get(p.__id)!)!),
+        );
         return alive.size === 1 ? [...alive][0] : null;
     }
 

@@ -93,3 +93,30 @@ test("the skills that can run now are listed, and omitted when not given", () =>
     expect(buildStateBlock(obs, { agentId: "team-a-0", t: 0 })).not.toContain("[can do:");
     expect(buildStateBlock(obs, { agentId: "team-a-0", t: 0, canDo: [] })).not.toContain("[can do:");
 });
+
+test("cover and buildings are named, so a decision can point at one", () => {
+    const episode = new CpcEpisode({
+        seed: "cpc-state-block-cover",
+        scripted: "idle",
+        controlled: ["team-a-0"],
+        cover: "default",
+    });
+    const obs = episode.reset().obs["team-a-0"];
+    episode.close();
+
+    const block = buildStateBlock(obs, { agentId: "team-a-0", t: 0 });
+    const coverLine = block.split("\n").find((line) => line.startsWith("[cover:"));
+    expect(coverLine, block).toBeDefined();
+    // `c1 stone 8m NE`: a name the grammar will offer and the resolver will look up
+    expect(coverLine).toMatch(/\[cover: c1 [a-z]+ \d+m [NESW]{1,2}/);
+    expect(coverLine).not.toContain("_01"); // engine ids never reach the planner
+});
+
+test("no cover, no line", () => {
+    const episode = new CpcEpisode({ seed: "cpc-state-block-bare", scripted: "idle", controlled: ["team-a-0"] });
+    const obs = episode.reset().obs["team-a-0"];
+    episode.close();
+    const block = buildStateBlock(obs, { agentId: "team-a-0", t: 0 });
+    expect(block).not.toContain("[cover:");
+    expect(block).not.toContain("[buildings:");
+});
